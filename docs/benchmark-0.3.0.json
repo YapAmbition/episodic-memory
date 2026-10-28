@@ -1,0 +1,13 @@
+{
+  "events": 10,
+  "measured_requests": 50,
+  "excluded_warmups": 5,
+  "queries": 5,
+  "mode": "auto_without_embedding",
+  "server_mean_ms": 17.03,
+  "server_p95_ms": 35.51,
+  "testclient_mean_ms": 25.28,
+  "testclient_p95_ms": 47.99,
+  "external_model_calls": 0,
+  "method": "isolated SQLite copy; serial Linux TestClient calls; diagnostic persistence included"
+}

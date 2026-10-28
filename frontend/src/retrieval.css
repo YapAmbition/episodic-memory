@@ -1,0 +1,332 @@
+.retrieval-settings {
+  display: grid;
+  gap: 22px;
+}
+.retrieval-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 5px 0 24px;
+}
+.retrieval-mode-card {
+  display: flex;
+  gap: 10px;
+  padding: 18px 15px;
+  border: 1px solid var(--line, #e7e4dc);
+  border-radius: 12px;
+  cursor: pointer;
+  background: #fff;
+  transition:
+    border-color 0.15s,
+    background 0.15s;
+}
+.retrieval-mode-card.selected {
+  border-color: #9cab9d;
+  background: #f1f5ef;
+  box-shadow: 0 0 0 1px #9cab9d;
+}
+.retrieval-mode-card input {
+  margin: 4px 0 0;
+  accent-color: #6b816f;
+  flex-shrink: 0;
+}
+.retrieval-mode-card strong {
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.retrieval-mode-card strong small {
+  font-size: 10px;
+  font-weight: 500;
+  color: #6b816f;
+  background: #e2eadf;
+  padding: 2px 5px;
+  border-radius: 4px;
+}
+.retrieval-mode-card p {
+  font-size: 12px;
+  color: #77796f;
+  line-height: 1.8;
+  margin: 8px 0 0;
+}
+.retrieval-mode-card em {
+  font-size: 11px;
+  font-style: normal;
+  color: #a47751;
+  line-height: 1.7;
+  display: block;
+  margin-top: 7px;
+}
+.retrieval-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  margin-top: 20px;
+}
+.retrieval-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 310px;
+  gap: 22px;
+  align-items: start;
+}
+.retrieval-index-panel {
+  padding: 25px;
+  position: sticky;
+  top: 20px;
+}
+.retrieval-index-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 10px;
+}
+.retrieval-index-title h3 {
+  font-size: 17px;
+  margin: 8px 0 15px;
+}
+.retrieval-index-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: 20px;
+  background: #f2eee5;
+  color: #9b784c;
+}
+.retrieval-index-state i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.retrieval-index-state.ready {
+  background: #edf3e9;
+  color: #6a8068;
+}
+.retrieval-coverage {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 24px 0 12px;
+}
+.retrieval-coverage strong {
+  font-size: 42px;
+  font-weight: 500;
+  color: #526a56;
+  font-family: Georgia, serif;
+}
+.retrieval-coverage span {
+  font-size: 12px;
+  color: #96978d;
+}
+.retrieval-progress {
+  height: 5px;
+  border-radius: 5px;
+  background: #edece5;
+  overflow: hidden;
+}
+.retrieval-progress span {
+  display: block;
+  height: 100%;
+  background: #94a48d;
+  transition: width 0.2s;
+}
+.retrieval-index-panel dl {
+  margin: 22px 0;
+}
+.retrieval-index-panel dl div {
+  display: flex;
+  justify-content: space-between;
+  gap: 15px;
+  font-size: 12px;
+  margin: 15px 0;
+}
+.retrieval-index-panel dt {
+  color: #93978c;
+  white-space: nowrap;
+}
+.retrieval-index-panel dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
+  color: #51594f;
+}
+.retrieval-index-panel > .button {
+  width: 100%;
+  justify-content: center;
+}
+.retrieval-advanced {
+  margin: 20px 0;
+  border-top: 1px solid #eeeae2;
+  padding-top: 15px;
+}
+.retrieval-advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: #66785f;
+}
+.retrieval-advanced .schedule-form {
+  margin-top: 18px;
+}
+.retrieval-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #777;
+  margin-top: 10px;
+}
+.retrieval-warning {
+  background: #fff5e9;
+  color: #986b35;
+  border: 1px solid #eedfc7;
+  padding: 12px 14px;
+  font-size: 12px;
+  line-height: 1.8;
+  border-radius: 8px;
+  margin: 12px 0;
+  overflow-wrap: anywhere;
+}
+.retrieval-job {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  color: #6a7f67;
+  font-size: 12px;
+  padding: 13px 0;
+}
+.retrieval-job small {
+  display: block;
+  font-size: 11px;
+  color: #9a9b8e;
+  margin-top: 6px;
+}
+.lab-retrieval-control {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: #7c8175;
+}
+.lab-retrieval-control select {
+  padding: 7px 24px 7px 9px;
+  border: 1px solid #e2e0d6;
+  border-radius: 7px;
+  background: #fffdf8;
+  color: #56624f;
+  font: inherit;
+  max-width: 190px;
+}
+.recall-diagnostics {
+  border-bottom: 1px solid #eeeae3;
+  padding: 13px 19px;
+  background: #fafbf6;
+}
+.recall-diagnostics > summary {
+  font-size: 11px;
+  color: #677c62;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.recall-diagnostics .retrieval-warning {
+  margin-bottom: 0;
+}
+.recall-route-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 15px;
+}
+.recall-route-list > div {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: #737a6c;
+}
+.recall-route-list small {
+  color: #a0a394;
+}
+.recall-stage-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 14px;
+}
+.recall-stage-list span {
+  border: 1px solid #e7e9df;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 10px;
+  color: #808775;
+}
+.candidate-route-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+.candidate-route-tags span {
+  background: #f1f4ed;
+  border-radius: 3px;
+  padding: 2px 5px;
+  color: #829077;
+  font-size: 9px;
+}
+.retrieval-monitor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 22px;
+}
+.retrieval-index-metrics {
+  display: flex;
+  gap: 25px;
+  padding: 0 0 20px;
+  flex-wrap: wrap;
+}
+.retrieval-index-metrics > div {
+  display: grid;
+  gap: 8px;
+  font-size: 11px;
+  color: #8a9380;
+}
+.retrieval-index-metrics strong {
+  font-size: 22px;
+  color: #596e53;
+  font-weight: 500;
+}
+@media (max-width: 1200px) {
+  .retrieval-mode-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .retrieval-columns {
+    grid-template-columns: minmax(0, 1fr) 265px;
+  }
+}
+@media (max-width: 850px) {
+  .retrieval-columns,
+  .retrieval-monitor-grid {
+    grid-template-columns: 1fr;
+  }
+  .retrieval-index-panel {
+    position: static;
+  }
+  .retrieval-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .lab-retrieval-control {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 480px) {
+  .retrieval-mode-grid {
+    grid-template-columns: 1fr;
+  }
+}

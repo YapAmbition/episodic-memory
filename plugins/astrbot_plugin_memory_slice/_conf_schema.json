@@ -1,0 +1,93 @@
+{
+  "enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "启用记忆插件"
+  },
+  "private_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "记录私聊"
+  },
+  "group_enabled": {
+    "type": "bool",
+    "default": true,
+    "description": "记录群聊（需要关注 UID）"
+  },
+  "focus_uid": {
+    "type": "string",
+    "default": "",
+    "description": "关注对象的平台 UID；群聊必填"
+  },
+  "focus_name": {
+    "type": "string",
+    "default": "",
+    "description": "关注对象的名字，用于文字提及匹配"
+  },
+  "focus_platform": {
+    "type": "string",
+    "default": "",
+    "description": "关注 UID 所属的平台实例 ID；留空应用于所有实例"
+  },
+  "group_ids": {
+    "type": "list",
+    "default": [],
+    "description": "允许的群 ID；留空表示所有群"
+  },
+  "provider_id": {
+    "type": "string",
+    "default": "",
+    "description": "整理与模型联想使用的聊天模型；留空跟随会话",
+    "_special": "select_provider"
+  },
+  "retrieval_mode": {
+    "type": "string",
+    "default": "local",
+    "description": "召回方式：local 程序召回 / llm 大模型联想",
+    "options": [
+      "local",
+      "llm"
+    ]
+  },
+  "auto_maintain": {
+    "type": "bool",
+    "default": true,
+    "description": "定时整理"
+  },
+  "interval_minutes": {
+    "type": "int",
+    "default": 60,
+    "description": "整理间隔（分钟，1–10080）"
+  },
+  "model_timeout_seconds": {
+    "type": "int",
+    "default": 60,
+    "description": "模型请求超时（秒，1–180）"
+  },
+  "context_window_tokens": {
+    "type": "int",
+    "default": 0,
+    "description": "模型上下文容量；0 表示未知，使用核心输入预算"
+  },
+  "output_tokens": {
+    "type": "int",
+    "default": 4096,
+    "description": "整理输出预留 token 数"
+  },
+  "ignore_prefixes": {
+    "type": "list",
+    "default": [
+      "/",
+      "记忆状态",
+      "记忆整理"
+    ],
+    "description": "忽略这些前缀的消息（例如指令）"
+  },
+  "memory_options": {
+    "type": "text",
+    "default": "{}",
+    "description": "高级记忆参数 JSON：可配置淡忘、召回、整理预算等；见 README",
+    "editor_mode": true,
+    "editor_language": "json"
+  }
+}

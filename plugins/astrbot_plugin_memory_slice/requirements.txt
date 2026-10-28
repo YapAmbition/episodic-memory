@@ -1,0 +1,4 @@
+pydantic>=2.10.6,<3
+httpx>=0.28.1,<1
+prometheus-client>=0.21.1,<1
+filelock>=3.16,<4

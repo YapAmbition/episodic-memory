@@ -1,0 +1,10 @@
+global:
+  scrape_interval: 15s
+scrape_configs:
+  - job_name: memory-slice
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['127.0.0.1:8091']
+    # 配置 MEMORY_METRICS_TOKEN 或 MEMORY_API_TOKEN 后取消下面两行注释，填写监控令牌：
+    # authorization:
+    #   credentials: YOUR_METRICS_TOKEN

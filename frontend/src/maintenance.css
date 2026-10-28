@@ -1,0 +1,21 @@
+.maintenance-budget-intro { display:flex; gap:16px; align-items:flex-start; padding:18px; margin:18px 0; border:1px solid #dce4da; border-radius:14px; background:linear-gradient(115deg,#f0f4ed,#faf7f0); }
+.maintenance-budget-intro strong { display:block; margin-bottom:6px; color:#385b46; }
+.maintenance-budget-intro p { font-size:13px; line-height:1.65; margin:0; color:#6d756b; }
+.maintenance-details { margin-top:10px; padding:12px 14px; background:#f7f8f3; border:1px solid #e0e5d9; border-radius:10px; font-size:12px; }
+.maintenance-details summary { cursor:pointer; color:#526952; font-weight:600; }
+.maintenance-facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px 22px; margin:18px 0 10px; }
+.maintenance-facts small { display:block; color:#878c81; font-size:11px; margin-bottom:5px; }
+.maintenance-note { color:#7b8175; font-size:11px!important; line-height:1.7; }
+.maintenance-deferred { padding:12px; border-left:3px solid #b78a58; background:#f7eddf; line-height:1.7; margin:12px 0; }
+.maintenance-candidate-list { max-height:230px; overflow:auto; border-top:1px solid #e0e5d9; margin-top:12px; }
+.maintenance-candidate-list > div { display:flex; justify-content:space-between; gap:16px; padding:9px 0; border-bottom:1px solid #e7eadd; }
+.maintenance-candidate-list small { display:block; font-size:10px; margin-top:3px; color:#7d8977; }
+.maintenance-candidate-list > div > span:last-child { text-align:right; white-space:nowrap; }
+.maintenance-attempts { display:flex; flex-direction:column; gap:7px; margin-top:13px; color:#737d6e; }
+.maintenance-monitor-kpis { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:20px 0; }
+.maintenance-monitor-kpis > div { border:1px solid #e5e8df; border-radius:12px; padding:15px; background:#fafbf7; }
+.maintenance-monitor-kpis strong { display:block; font-size:24px; color:#405e48; margin:9px 0; font-weight:500; }
+.maintenance-monitor-kpis small { color:#89907f; }
+.job-row > div { min-width:0; flex:1; }
+.job-dot.deferred { background:#c79658; }
+@media(max-width:750px) { .maintenance-monitor-kpis { grid-template-columns:repeat(2,minmax(0,1fr)); } .maintenance-facts { grid-template-columns:1fr; } }

@@ -1,0 +1,17 @@
+services:
+  memory:
+    build: .
+    ports:
+      - "${MEMORY_BIND:-127.0.0.1}:${MEMORY_PORT:-8000}:8000"
+    environment:
+      MEMORY_API_TOKEN: ${MEMORY_API_TOKEN:-}
+      MEMORY_METRICS_TOKEN: ${MEMORY_METRICS_TOKEN:-}
+      MODEL_MAX_CONCURRENT: ${MODEL_MAX_CONCURRENT:-3}
+      MODEL_API_KEY: ${MODEL_API_KEY:-}
+      SEED_DEMO: ${SEED_DEMO:-true}
+      TZ: Asia/Shanghai
+    volumes:
+      - memory-data:/app/data
+    restart: unless-stopped
+volumes:
+  memory-data:
