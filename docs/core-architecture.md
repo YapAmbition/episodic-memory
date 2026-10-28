@@ -3,7 +3,7 @@
 0.6.0 提取公共核心并移除 embedding。后续新增 [AstrBot 插件](../plugins/astrbot_plugin_memory_slice/README.md)，构建时打包同一份核心源码。
 
 ```text
-backend/memory_slice/       共享核心：无 FastAPI / Starlette / Uvicorn 依赖
+backend/memory_slice/       共享核心（默认导入不依赖 Web 框架）
   service.py               MemoryService：应用操作、事务编排、整理调度和生命周期
   adapters.py              ModelAdapter 协议、RemoteModelAdapter 默认实现
   model.py                 兼容 Chat Completions 的远程调用及联想输出校验
@@ -13,7 +13,8 @@ backend/memory_slice/       共享核心：无 FastAPI / Starlette / Uvicorn 依
   focus.py                 关注筛选和临时消息清理
   schemas.py / errors.py   入参约束及独立领域错误
   monitoring.py            每实例指标和快照
-backend/app/               HTTP 适配：路由、鉴权、异常映射、取消检测、静态页面
+  web.py / web_middleware.py 可选 HTTP 适配，使用时需安装 server 依赖
+backend/app/               独立 HTTP 入口
 frontend/                  现有 React 管理界面
 ```
 
@@ -87,3 +88,9 @@ async def complete(self, settings, api_key, messages,
 - 前端移除语义配置、索引按钮及指标卡片，保留程序路径、模型联想、整理与关注指标。
 
 原有事件记忆和召回行为通过迁移后的回归测试覆盖；新测试还在禁止导入 Web 框架的子进程中调用核心，确保其可以独立运行。
+
+## AstrBot 内置网页（插件 0.2.0）
+
+`memory_slice.web.create_app(service=runtime.core, host_mode="astrbot", access_token=..., frontend_dir=..., scope_info=...)` 复用宿主实例，不启动或关闭其核心。插件的 `WebServer` 管理监听 socket 和 Uvicorn 任务，不接管宿主信号。卸载时先关闭网页，再关闭核心。独立服务不传 `service`，继续由应用生命周期管理核心。
+
+管理模式要求访问令牌；配置和模拟器相关写入返回 403，事件编辑和整理复用现有接口。不要再启动第二个后端操作插件数据库。

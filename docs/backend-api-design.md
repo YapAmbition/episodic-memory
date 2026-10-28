@@ -53,3 +53,9 @@ HTTP 服务是公共记忆核心的适配层，完整入参和响应约束以运
 ## 监控与认证
 
 `/api/health` 不需要认证。`/metrics` 使用 `MEMORY_METRICS_TOKEN`，留空时沿用业务令牌；JSON 监控使用业务令牌。模型密钥不回传，页面填写的密钥只保存在进程内。统计接口不调用模型。见 [监控说明](../monitoring/README.md)。
+
+## 宿主运行模式
+
+`GET /api/v1/runtime` 使用业务令牌，返回 `mode`、`managed_configuration`、`simulator_enabled`。独立服务保持原功能；AstrBot 模式的网页与插件共用核心，空间列表附带 `host` 来源及启用状态。
+
+AstrBot 模式禁止配置、模型、人物、空间、会话、消息及模拟聊天的写入（403）。允许事件编辑、检索、上下文召回、整理、任务重试及召回反馈；停用空间的整理和任务重试返回 409。`/metrics` 与业务接口统一使用插件的 `web_token`。

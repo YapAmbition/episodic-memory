@@ -1,3 +1,4 @@
+import { PluginConsole, PluginConfiguration } from "./PluginConsole";
 import { MaintenanceDetails } from "./MaintenanceDetails";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -117,6 +118,9 @@ function Logo() {
 }
 
 export default function App() {
+  const [hostMode, setHostMode] = useState("standalone");
+  const managed = hostMode === "astrbot";
+  const visiblePages = pages.filter(p => !managed || p.id !== "api").map(p => ({...p, label: managed && p.id === "lab" ? "插件会话" : p.label}));
   const [page, setPage] = useState<Page>(() =>
     window.location.hash === "#monitoring" ? "monitoring" : "lab",
   );
@@ -192,7 +196,8 @@ export default function App() {
 
   const bootstrap = useCallback(async () => {
     try {
-      const s = await api<Space[]>("/spaces");
+      const [runtime, s] = await Promise.all([api<{mode: string}>("/runtime"), api<Space[]>("/spaces")]);
+      setHostMode(runtime.mode);
       setServiceConnected(true);
       setSpaces(s);
       if (s.length)
@@ -227,6 +232,23 @@ export default function App() {
     setStats(s);
     setJobs(j);
   }, [sid, base, clock, getTime]);
+  useEffect(() => {
+    if (!managed) return;
+    let pending = false;
+    const timer = setInterval(async () => {
+      if (document.hidden || pending) return;
+      pending = true;
+      try {
+        await bootstrap(); await refresh();
+        if (sid) {
+          const cfg = await api<Config>(`${base}/config`);
+          if (currentScope.current === sid) setConfig(cfg);
+        }
+      } catch(e) { fail(e); }
+      finally { pending = false; }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [managed, bootstrap, refresh, fail, sid, base]);
   function switchSpace(value: string) {
     setPid("");
     setCid("");
@@ -524,7 +546,7 @@ export default function App() {
         `${e.title}${e.body}${JSON.stringify(e.anchors)}`.includes(eventQuery)),
   );
   const currentPerson = people.find((p) => p.id === pid);
-  const currentPage = pages.find((p) => p.id === page)!;
+  const currentPage = visiblePages.find((p) => p.id === page) || visiblePages[0];
 
   return (
     <div className="app-shell">
@@ -559,16 +581,16 @@ export default function App() {
           >
             {spaces.map((s) => (
               <option key={s.id} value={s.id}>
-                {s.name}
+                {s.host?.label || s.name}
               </option>
             ))}
           </select>
-          <button aria-label="新建记忆空间" onClick={() => setSpaceModal(true)}>
+          {!managed && <button aria-label="新建记忆空间" onClick={() => setSpaceModal(true)}>
             <Plus size={15} />
-          </button>
+          </button>}
         </div>
         <nav>
-          {pages.map((p) => (
+          {visiblePages.map((p) => (
             <button
               key={p.id}
               className={`nav-item ${page === p.id ? "active" : ""}`}
@@ -606,7 +628,7 @@ export default function App() {
             className={`service-dot ${serviceConnected ? "" : "offline"}`}
           />
           <span>{serviceConnected ? "记忆服务已连接" : "等待服务连接"}</span>
-          <small>v0.6.0</small>
+          <small>{managed ? "AstrBot · v0.2.0" : "v0.6.0"}</small>
         </div>
       </aside>
       <main className="main">
@@ -664,18 +686,19 @@ export default function App() {
         ) : !sid ? (
           <div className="empty-state">
             <Database size={35} />
-            <h2>建立第一个记忆空间</h2>
-            <p>独立保存一段共同历史。</p>
-            <button
+            <h2>{managed ? "等待 AstrBot 的第一条消息" : "建立第一个记忆空间"}</h2>
+            <p>{managed ? "启用私聊，或配置群聊关注 UID；接收到消息后会自动创建空间。" : "独立保存一段共同历史。"}</p>
+            {!managed && <button
               className="button primary"
               onClick={() => setSpaceModal(true)}
             >
               创建空间
-            </button>
+            </button>}
           </div>
         ) : (
           <div className="page-content">
-            {page === "lab" && (
+            {page === "lab" && managed && spaces.find(s => s.id === sid) && <PluginConsole key={sid} space={spaces.find(s => s.id === sid)!} stats={stats} onMaintain={maintain} onJobs={() => setShowJobs(true)} busy={jobs.some(j => ["queued", "running"].includes(j.status))} />}
+            {page === "lab" && !managed && (
               <>
                 <section className="page-heading">
                   <div>
@@ -1384,7 +1407,8 @@ export default function App() {
             {page === "graph" && (
               <GraphPage events={events} onOpen={setEventModal} />
             )}
-            {page === "settings" && config && model && (
+            {page === "settings" && managed && config && <PluginConfiguration config={config} />}
+            {page === "settings" && !managed && config && model && (
               <SettingsPage
                 sid={sid}
                 config={config}
@@ -1398,7 +1422,7 @@ export default function App() {
                 onError={fail}
               />
             )}
-            {page === "api" && (
+            {page === "api" && !managed && (
               <ApiPage sid={sid} pid={pid} cid={cid} copy={copy} />
             )}
           </div>

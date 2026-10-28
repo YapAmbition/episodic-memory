@@ -116,9 +116,34 @@ class Runtime:
             ),
         )["id"]
 
+    def scope_info(self, sid):
+        binding = next(
+            (b for b in self.core.store.list("astrbot_scope") if b["space_id"] == sid),
+            None,
+        )
+        if not binding:
+            return {"active": False, "label": "历史空间"}
+        return {
+            "active": binding["signature"] == self.signature and self.allowed(binding),
+            "kind": "group" if binding["group"] else "private",
+            "platform": binding["platform"],
+            "external_id": binding["group"] or binding["sender"],
+            "label": (
+                "群聊 " + binding["group"]
+                if binding["group"]
+                else "私聊 " + binding["sender"]
+            )
+            + " · "
+            + binding["platform"],
+        }
+
     def configure(self, binding, active=True):
         sid = binding["space_id"]
         cfg = self.core.config_for(sid)
+        if not active:
+            cfg["schedule_enabled"] = False
+            self.core.store.put("config", dict(cfg, id=sid), sid)
+            return
         cfg.update(self.options)
         cfg.update(
             default_retrieval_mode=self.config.get("retrieval_mode", "local"),

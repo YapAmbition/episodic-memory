@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from build_astrbot_plugin import build
 
 PACKAGE = tempfile.TemporaryDirectory()
-archive = build(Path(PACKAGE.name) / "plugin.zip")
+archive = build(Path(PACKAGE.name) / "plugin.zip", build_frontend=False)
 with zipfile.ZipFile(archive) as z:
     z.extractall(PACKAGE.name)
 sys.path.insert(0, PACKAGE.name)
@@ -515,8 +515,8 @@ class PackagingTests(unittest.TestCase):
                 )
             )
             deps = z.read(prefix + "requirements.txt").decode().lower()
-            self.assertNotIn("fastapi", deps)
-            self.assertNotIn("uvicorn", deps)
+            self.assertIn("fastapi", deps)
+            self.assertIn("uvicorn", deps)
 
 
 if __name__ == "__main__":

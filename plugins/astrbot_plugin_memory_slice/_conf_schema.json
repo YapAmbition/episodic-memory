@@ -89,5 +89,26 @@
     "description": "高级记忆参数 JSON：可配置淡忘、召回、整理预算等；见 README",
     "editor_mode": true,
     "editor_language": "json"
+  },
+  "web_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "启用内嵌管理页面"
+  },
+  "web_host": {
+    "type": "string",
+    "default": "127.0.0.1",
+    "description": "管理页面监听地址；仅本机用 127.0.0.1，局域网访问用 0.0.0.0"
+  },
+  "web_port": {
+    "type": "int",
+    "default": 8765,
+    "description": "管理页面端口（不要与 AstrBot 后台端口重复）"
+  },
+  "web_token": {
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "description": "管理页面访问令牌：启用前填写至少 16 位 ASCII 字符；请勿使用模型 API Key"
   }
 }

@@ -1,5 +1,5 @@
 export type Person = { id: string; name: string; relation: string; platform?: string; external_uid?: string; aliases?: string[] };
-export type Space = { id: string; name: string; description: string };
+export type Space = { id: string; name: string; description: string; host?: {active: boolean; kind?: string; platform?: string; external_id?: string; label: string} };
 export type Conversation = {
   kind?: "direct" | "group";
   id: string;
