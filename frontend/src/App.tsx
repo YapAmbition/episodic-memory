@@ -628,7 +628,7 @@ export default function App() {
             className={`service-dot ${serviceConnected ? "" : "offline"}`}
           />
           <span>{serviceConnected ? "记忆服务已连接" : "等待服务连接"}</span>
-          <small>{managed ? "AstrBot · v0.2.0" : "v0.6.0"}</small>
+          <small>{managed ? "AstrBot · v0.2.1" : "v0.6.0"}</small>
         </div>
       </aside>
       <main className="main">

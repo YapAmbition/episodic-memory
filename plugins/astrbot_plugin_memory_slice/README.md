@@ -1,12 +1,12 @@
 # 记忆切片 · Memory Slice for AstrBot
 
-插件版本 **0.2.0**，内嵌 Memory Slice **0.6.0** 核心。无需另外部署 Docker、HTTP 服务或配置 embedding。模型整理复用 AstrBot 已配置的聊天模型。
+插件版本 **0.2.1**，内嵌 Memory Slice **0.6.0** 核心。无需另外部署 Docker、HTTP 服务或配置 embedding。模型整理复用 AstrBot 已配置的聊天模型。
 
 ## 安装
 
 要求 **AstrBot >= 4.24.0**，使用其内置 LLM/Agent 流程。该最低版本来自本轮临时内容块 API；不支持绕过版本限制安装到旧版。外接 Dify 等未触发标准请求钩子的执行器尚未适配。
 
-1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.2.0.zip`。
+1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.2.1.zip`。
 2. 如果使用手工安装，将 ZIP 中的 `astrbot_plugin_memory_slice` 文件夹放到 AstrBot 的 `data/plugins/` 下；在 AstrBot 的 Python 环境安装该目录的 `requirements.txt`，然后重载插件。
 3. 插件配置中选择已有聊天模型；留空时跟随当前会话。无需填写新的 API Key 或模型地址。
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
@@ -122,7 +122,7 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 构建脚本先在本机执行 React 生产构建（首次自动执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
-默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.2.0.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
+默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.2.1.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 
 当前通过 25 项插件测试、113 项核心/HTTP 回归测试和 17 项前端工具测试。新增覆盖网页鉴权、同实例共享、只读配置、事件编辑、整理、端口释放及重启。插件测试使用真实共享核心、SQLite 和模拟 AstrBot 宿主，覆盖事件整理/召回、群聊筛选与隔离、重载、去重、超时取消、模型输出截断、临时注入、发送后记录、故障不阻断聊天及包内核心一致性。
 

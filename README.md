@@ -21,7 +21,7 @@
 - **独立服务**：FastAPI + React，按照下方 Docker 或本地开发步骤启动。
 - **嵌入应用**：`pip install .` 安装公共核心，通过 `MemoryService` 调用，不启动 Web 服务。见 [核心接口与生命周期](docs/core-architecture.md)。
 
-已拆分公共核心，并提供 **AstrBot 内嵌插件 0.2.0**，可在插件配置中开启内置 React 管理网页，无需单独部署服务；见 [安装与配置](plugins/astrbot_plugin_memory_slice/README.md)。旧数据库的语义默认模式会迁移为程序召回，事件和原始消息保留；旧向量数据不再使用。`auto` 请求仍作为 `local` 的兼容别名，`hybrid` 请求不再支持。
+已拆分公共核心，并提供 **AstrBot 内嵌插件 0.2.1**，可在插件配置中开启内置 React 管理网页，无需单独部署服务；见 [安装与配置](plugins/astrbot_plugin_memory_slice/README.md)。旧数据库的语义默认模式会迁移为程序召回，事件和原始消息保留；旧向量数据不再使用。`auto` 请求仍作为 `local` 的兼容别名，`hybrid` 请求不再支持。
 
 ## 快速启动
 

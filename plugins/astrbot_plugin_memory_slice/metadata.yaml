@@ -1,7 +1,7 @@
 name: astrbot_plugin_memory_slice
 display_name: 记忆切片 · Memory Slice
 desc: 以事件为单位管理共同经历，支持人物、时间、淡忘和关联召回；内嵌运行，无需独立服务。
-version: v0.2.0
+version: v0.2.1
 author: Memory Slice
 repo: ""
 astrbot_version: ">=4.24.0"
