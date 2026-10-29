@@ -4,6 +4,7 @@ import { api, put } from "./api";
 import type { Capabilities, Config } from "./types";
 import { retrievalModes } from "./retrievalUi";
 import "./retrieval.css";
+import { EmbeddingSettings } from "./EmbeddingSettings";
 
 export function RetrievalSettings({sid, config, onConfig, notify, onError}: {
   sid: string; config: Config; onConfig: (c: Config) => void;
@@ -27,6 +28,7 @@ export function RetrievalSettings({sid, config, onConfig, notify, onError}: {
   }
   return (
     <div className="retrieval-settings">
+      <EmbeddingSettings key={sid} sid={sid} onError={onError} />
       <section className="panel settings-section">
         <div className="settings-section-heading">
           <div>

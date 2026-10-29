@@ -1,0 +1,279 @@
+{
+  "version": 1,
+  "at": "2026-10-29T12:00:00+08:00",
+  "provenance": "人工固定样本：项目对话主题的改写及虚构生活事件；不是原始对话导出，不评估整理质量。",
+  "events": [
+    {
+      "id": "bread1",
+      "title": "第一次烤面包",
+      "body": "第一次烤面包失败，面团没发起来，成品硬得像石头，给它起名陨石一号。",
+      "anchors": {
+        "details": [
+          "陨石一号",
+          "烤面包"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "bread2",
+      "title": "第二次烤面包",
+      "body": "第二次尝试烤面包仍然失败。这次发现酵母已经过期，准备换新酵母再试。",
+      "anchors": {
+        "details": [
+          "过期酵母",
+          "烤面包"
+        ]
+      },
+      "links": [
+        {
+          "target_id": "bread1",
+          "relation": "前一次尝试",
+          "strength": 1
+        }
+      ],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "bread3",
+      "title": "换酵母后成功",
+      "body": "第三次换了新酵母，面包终于松软了。此前失败的第二次尝试成为排查依据。",
+      "anchors": {
+        "details": [
+          "新酵母",
+          "面包成功"
+        ]
+      },
+      "links": [
+        {
+          "target_id": "bread2",
+          "relation": "前一次尝试",
+          "strength": 1
+        }
+      ],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "branch",
+      "title": "旧插件包的原因",
+      "body": "打包脚本总是生成旧版本，最后发现切错了 Git 分支，换回开发分支后版本正确。",
+      "anchors": {
+        "details": [
+          "旧版本",
+          "Git分支",
+          "插件打包"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "dependency",
+      "title": "插件依赖冲突",
+      "body": "安装插件遇到依赖冲突，filelock 的上限小于4，但宿主使用4.2.4，兼容范围调整为小于5。",
+      "anchors": {
+        "details": [
+          "filelock",
+          "依赖上限",
+          "4.2.4"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "scope",
+      "title": "群聊和私聊隔离",
+      "body": "私聊查到3件记忆，群聊却是0件。原因是不同会话使用独立记忆空间，这是预期行为。",
+      "anchors": {
+        "details": [
+          "私聊",
+          "群聊",
+          "记忆空间"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "build",
+      "title": "源码构建环境",
+      "body": "从源码构建插件需要 Node.js 和 npm。用户安装已经构建好的 ZIP 不需要这些工具。",
+      "anchors": {
+        "details": [
+          "Node.js",
+          "npm",
+          "源码构建"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "name",
+      "title": "确定项目名称",
+      "body": "项目名称从拾忆改成记忆切片，英文名为 Memory Slice。",
+      "anchors": {
+        "details": [
+          "拾忆",
+          "Memory Slice",
+          "记忆切片"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "latency",
+      "title": "召回速度测试",
+      "body": "此前试了4次 LLM 召回，平均耗时8.4秒，影响聊天体验。",
+      "anchors": {
+        "details": [
+          "8.4秒",
+          "LLM召回"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "release",
+      "title": "暂缓自动发布",
+      "body": "先与朋友测试插件，稳定之后才考虑独立仓库和自动发布。目前没有自动创建 Release 下载页。",
+      "anchors": {
+        "details": [
+          "Release",
+          "自动发布"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "glasses",
+      "title": "找眼镜",
+      "body": "翻找整个房间也没找到眼镜，最后发现它一直挂在自己领口。",
+      "anchors": {
+        "details": [
+          "眼镜",
+          "领口"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "power",
+      "title": "电脑没开电源",
+      "body": "检查电脑半天，最后发现插排开关没有打开，按下后机器正常启动。",
+      "anchors": {
+        "details": [
+          "电脑",
+          "插排开关"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "dinner",
+      "title": "周末晚饭计划",
+      "body": "约好周六去湖边餐厅吃晚饭，还没出发。",
+      "anchors": {
+        "details": [
+          "湖边餐厅",
+          "周六"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-31T18:00:00+08:00",
+      "status": "planned"
+    },
+    {
+      "id": "future",
+      "title": "尚未得知的消息",
+      "body": "周日去星河书店买到一本绝版画册。",
+      "anchors": {
+        "details": [
+          "星河书店",
+          "绝版画册"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-11-01T12:00:00+08:00",
+      "occurred_at": "2026-11-01T12:00:00+08:00",
+      "status": "closed"
+    },
+    {
+      "id": "archived",
+      "title": "已归档的旧住址",
+      "body": "旧住址是梧桐路17号，该记录已归档。",
+      "anchors": {
+        "details": [
+          "梧桐路17号"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "archived"
+    },
+    {
+      "id": "distractor",
+      "title": "手机充电",
+      "body": "手机充电线接触不良，更换数据线后恢复正常。",
+      "anchors": {
+        "details": [
+          "手机",
+          "充电线"
+        ]
+      },
+      "links": [],
+      "salience": 0.8,
+      "learned_at": "2026-10-20T12:00:00+08:00",
+      "occurred_at": "2026-10-20T12:00:00+08:00",
+      "status": "closed"
+    }
+  ]
+}

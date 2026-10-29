@@ -136,33 +136,11 @@ class UpgradeTests(unittest.TestCase):
         self.client.delete(self.prefix+'/events/'+old['id'])
         self.assertNotIn(old['id'],self.app.state.store.search_events(self.space,'松鼠书签'))
 
-    def test_structural_expansion_finds_different_keywords_and_reports_usage(self):
-        for index in range(50):
-            self.create_event(title=f'普通事项{index}',body=f'普通事项编号{index}',anchors={},salience=.1)
-        target = self.create_event(title='眼镜在领口',body='翻遍全屋，眼镜一直挂在领口。',anchors={'structure':['费力寻找后发现忽略眼前的简单答案']},salience=.1)
+    def test_removed_llm_recall_rejected_without_provider_calls(self):
         self.model_mode()
-        actual_client = httpx.AsyncClient
-        def handler(request):
-            payload=json.loads(request.content)
-            if '提取线索' in payload['messages'][0]['content']:
-                content={'structure':['费力寻找后发现忽略眼前的简单答案'],'scene':[],'details':[],'time':[]}
-            else:
-                catalog=json.loads(payload['messages'][1]['content'])['catalog']
-                self.assertTrue(any(e['id']==target['id'] for e in catalog))
-                self.assertLessEqual(len(catalog),40)
-                content={'matches':[{'event_id':target['id'],'score':.99,'reason':'都经历了费力排查却忽略眼前答案','evidence':'费力寻找后发现忽略眼前的简单答案'}]}
-            return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps(content,ensure_ascii=False)}}],'usage':{'prompt_tokens':3,'completion_tokens':2}})
-        def factory(*args,**kwargs):
-            return actual_client(*args,transport=httpx.MockTransport(handler),**kwargs)
-        with patch('memory_slice.model.httpx.AsyncClient',factory):
-            response=self.client.post(self.prefix+'/context',json={'person_id':self.person,'query':'电脑折腾半天，电源居然没开','at':fixtures.NOW.isoformat(),'use_model':True})
-        self.assertEqual(response.status_code,200,response.text)
-        trace=response.json()
-        self.assertIn(target['id'],[e['event_id'] for e in trace['selected']])
-        self.assertIn('expanded_structure',trace['retrieval']['routes'][target['id']])
-        text=self.client.get('/metrics').text
-        self.assertIn('memory_model_tokens_total{direction="input",purpose="association"} 3.0',text)
-        self.assertIn('memory_model_requests_total{outcome="success",purpose="query_expansion"} 1.0',text)
+        with patch('memory_slice.model.complete', side_effect=AssertionError('unexpected call')):
+            response=self.client.post(self.prefix+'/context',json={'query':'旧事','retrieval_mode':'llm'})
+        self.assertEqual(response.status_code,422)
 
     def test_monitoring_exports_aggregates_and_normalized_routes(self):
         old=self.create_event()

@@ -1,12 +1,12 @@
-# 0.6.0：可嵌入记忆核心
+# 0.7.0：可嵌入记忆核心
 
-0.6.0 提取公共核心并移除 embedding。后续新增 [AstrBot 插件](../plugins/astrbot_plugin_memory_slice/README.md)，构建时打包同一份核心源码。
+0.6.0 提取公共核心；0.7.0 加入可选远程 embedding 并移除 LLM 联想召回。后续新增 [AstrBot 插件](../plugins/astrbot_plugin_memory_slice/README.md)，构建时打包同一份核心源码。
 
 ```text
 backend/memory_slice/       共享核心（默认导入不依赖 Web 框架）
   service.py               MemoryService：应用操作、事务编排、整理调度和生命周期
   adapters.py              ModelAdapter 协议、RemoteModelAdapter 默认实现
-  model.py                 兼容 Chat Completions 的远程调用及联想输出校验
+  model.py                 兼容 Chat Completions 的远程调用及整理输出解析
   store.py                 SQLite、全文索引、短连接事务
   engine.py / retrieval.py  评分、淡忘、入口检索和关联展开
   maintenance*.py          追加维护、预算、补读、分段与版本
@@ -78,19 +78,23 @@ async def complete(self, settings, api_key, messages,
 - 核心抛 `MemoryError`，保留 `status_code`、`detail` 及可选 `headers`；HTTP 层映射为原有响应。业务代码无需捕获 FastAPI 异常。
 - 核心日志使用 `memory_slice` logger，默认传播给宿主日志系统；错误详情继续排除原始模型输出和密钥。
 
-## 移除 embedding 的兼容规则
+## 召回与向量生命周期
 
-- 默认 `local`，可选 `llm`。旧请求的 `auto` 是程序召回兼容别名，保存配置时归一化为 `local`。
-- 旧数据库的 `auto` / `hybrid` 默认模式在初始化时迁移为 `local`；新的 `hybrid` 请求返回 422。
-- 移除 `/embedding`、测试、状态、重建等接口、索引调度、向量召回和相关指标。能力接口不再返回 embedding。
-- 旧向量表及配置只保留在数据库中作为历史资料，不读取、不使用、不自动删除；新库不再创建向量表。
-- 未完成的旧索引任务标记失败且不恢复，尝试重试返回 410。事件、原始消息、正文、版本和关联保留。
-- 前端移除语义配置、索引按钮及指标卡片，保留程序路径、模型联想、整理与关注指标。
+`MemoryService.embeddings` 管理独立远程连接、内存密钥、向量索引和熔断。`service.start()` 启动索引任务，`close()` 取消并等待任务退出。该路径不使用宿主生成式模型适配器。
 
-原有事件记忆和召回行为通过迁移后的回归测试覆盖；新测试还在禁止导入 Web 框架的子进程中调用核心，确保其可以独立运行。
+默认 local；hybrid 同时使用程序候选与 embedding 候选，随后沿用人物/遗忘/关联展开逻辑。向量文本包含标题、派生锚点及正文片段。事件正文按 1200 字符、1000 字符步长分片，批量最多 8 段；内容哈希和服务/模型/维度签名决定有效性。编辑或归档后旧片段不参与查询。查询失败保留程序结果并记录安全原因，向量故障不影响事件持久化。
 
-## AstrBot 内置网页（插件 0.2.0）
+SQLite 中保存 `embedding_config`（无密钥）和 `embedding_vector`；旧版 embedding 表/记录保留但不复用。当前采用精确余弦扫描，尚未做大规模 ANN 或压力验证。向量只负责语义相似度，不保证跨主题的经历结构联想。
 
-`memory_slice.web.create_app(service=runtime.core, host_mode="astrbot", access_token=..., frontend_dir=..., scope_info=...)` 复用宿主实例，不启动或关闭其核心。插件的 `WebServer` 管理监听 socket 和 Uvicorn 任务，不接管宿主信号。卸载时先关闭网页，再关闭核心。独立服务不传 `service`，继续由应用生命周期管理核心。
+旧保存的 llm/auto 默认值迁移为 local；显式 llm 请求拒绝。详情见 [接口](backend-api-design.md)。
 
-管理模式要求访问令牌；配置和模拟器相关写入返回 403，事件编辑和整理复用现有接口。不要再启动第二个后端操作插件数据库。
+
+### 请求上下文与记忆去重
+
+核心 `/context` 输入新增可选 `current_context: string[]`，传入当前模型请求中实际存在的文本块（包括系统提示、历史、本轮输入和额外文本）。不传时保持原有召回行为；不要用永久会话历史代替实际请求。核心扫描全部文本检查完整记忆块，查询线索按近期字符预算选择，并排除协议记忆及规则块，不把全部上下文发送给 Embedding。
+
+事件输出使用 `<memory-slice id="event_123" revision="2" supersedes="1">完整正文</memory-slice>`；revision 复用事件存储版本，修改事件会递增。正文 XML 转义。同 ID 在当前上下文已有同版或更新版本时跳过，旧版则输出最新完整记录，去重原因位于 `omitted`。旧 `<event>` 格式不会误判为新版协议。
+
+规则使用 `<memory-slice-rules version="1">…</memory-slice-rules>`；有记忆输出且当前上下文缺少本版完整规则时附带。上下文裁剪后可再次注入，不维护会话永久已读状态。规则占用上下文字符预算。标签检测不是安全认证，接入方应传递真实请求内容。
+
+AstrBot 插件从 ProviderRequest 传递当前可见文本，仍使用临时注入，不修改历史；后续框架裁剪或其他插件修改不在此快照内。状态命令为 `/记忆切片`，召回仅支持 local/hybrid；hybrid 可能增加聊天延迟，失败自动降级。

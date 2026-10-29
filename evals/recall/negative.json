@@ -1,0 +1,61 @@
+{
+  "name": "negative",
+  "cases": [
+    {
+      "id": "negative-01",
+      "query": "我的银行卡密码是多少？",
+      "expected": [],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "negative-02",
+      "query": "昨天的航班号是多少？",
+      "expected": [],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "negative-03",
+      "query": "我们最终选定了哪款向量模型？",
+      "expected": [],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "negative-04",
+      "query": "星河书店那本绝版画册是哪本？",
+      "expected": [],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "negative-05",
+      "query": "梧桐路17号是什么地址？",
+      "expected": [],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "negative-06",
+      "query": "湖边餐厅晚饭已经吃完了吗？",
+      "expected": [
+        "dinner"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    }
+  ]
+}

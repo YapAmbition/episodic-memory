@@ -1,0 +1,73 @@
+{
+  "name": "context",
+  "cases": [
+    {
+      "id": "context-01",
+      "query": "后来为什么这样？",
+      "expected": [
+        "scope"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ],
+      "recent_messages": [
+        {
+          "role": "user",
+          "content": "刚才提到私聊有3件记忆，但群聊显示0件。"
+        }
+      ]
+    },
+    {
+      "id": "context-02",
+      "query": "最后怎么解决的？",
+      "expected": [
+        "branch"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ],
+      "recent_messages": [
+        {
+          "role": "user",
+          "content": "插件打包后一直显示旧版本，怀疑分支选错。"
+        }
+      ]
+    },
+    {
+      "id": "context-03",
+      "query": "装它需要吗？",
+      "expected": [
+        "build"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ],
+      "recent_messages": [
+        {
+          "role": "user",
+          "content": "我只下载了别人构建好的ZIP，没有Node.js。"
+        }
+      ]
+    },
+    {
+      "id": "context-04",
+      "query": "叫什么来着？",
+      "expected": [
+        "bread1"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ],
+      "recent_messages": [
+        {
+          "role": "user",
+          "content": "第一次烤面包硬得像石头，我们给它取了个外号。"
+        }
+      ]
+    }
+  ]
+}

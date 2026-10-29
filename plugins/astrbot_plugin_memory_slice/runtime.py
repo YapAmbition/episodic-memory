@@ -7,8 +7,10 @@ import uuid
 from datetime import datetime, timezone
 from .adapter import AstrBotModelAdapter
 from .memory_slice.service import MemoryService
+from .memory_slice.context_protocol import text_parts
 from .memory_slice.maintenance_context import budget_for
 from .memory_slice.schemas import (
+    EmbeddingInput,
     SpaceInput,
     PersonInput,
     ConversationInput,
@@ -57,8 +59,10 @@ class Runtime:
             context_window_tokens=config.get("context_window_tokens") or None,
             max_retries=0,
         ).model_dump(exclude={"api_key"})
-        if config.get("retrieval_mode", "local") not in ("local", "llm"):
-            raise ValueError("召回方式必须是 local 或 llm")
+        if self.config.get("retrieval_mode") == "llm":
+            self.config["retrieval_mode"] = "local"
+        if self.config.get("retrieval_mode", "local") not in ("local", "hybrid"):
+            raise ValueError("召回方式必须是 local 或 hybrid")
         initial = MemoryConfig.model_validate(
             dict(
                 self.options,
@@ -140,6 +144,17 @@ class Runtime:
     def configure(self, binding, active=True):
         sid = binding["space_id"]
         cfg = self.core.config_for(sid)
+        self.core.embeddings.configure(sid, EmbeddingInput(
+            enabled=bool(active and self.config.get("embedding_enabled", False)),
+            base_url=self.config.get("embedding_base_url", ""),
+            model=self.config.get("embedding_model", ""),
+            api_key=self.config.get("embedding_api_key", ""),
+            timeout_seconds=self.config.get("embedding_timeout_seconds", 1.5),
+            failure_threshold=self.config.get("embedding_failure_threshold", 3),
+            cooldown_seconds=self.config.get("embedding_cooldown_seconds", 30),
+            dimensions=self.config.get("embedding_dimensions") or None,
+            min_similarity=self.config.get("embedding_min_similarity", .45),
+        ))
         if not active:
             cfg["schedule_enabled"] = False
             self.core.store.put("config", dict(cfg, id=sid), sid)
@@ -234,7 +249,7 @@ class Runtime:
         return (
             not text
             or str(event.get_sender_id()) == str(event.get_self_id())
-            or text.lstrip("/").split()[0] in {"记忆状态", "记忆整理", "记忆身份"}
+            or text.lstrip("/").split()[0] in {"记忆切片", "记忆状态", "记忆整理", "记忆身份"}
             or any(
                 p and text.startswith(p)
                 for p in self.config.get("ignore_prefixes", ["/"])
@@ -310,7 +325,7 @@ class Runtime:
         event.set_extra("memory_slice_record", record)
         return record
 
-    async def recall(self, event):
+    async def recall(self, event, request=None):
         record = await self.ingest(event)
         if not record:
             return ""
@@ -319,12 +334,18 @@ class Runtime:
         # Only prior messages, not future concurrent arrivals or injected memory.
         index = next(i for i, m in enumerate(recent) if m["id"] == row["id"])
         parent = next((m for m in recent if m["id"] == row.get("in_reply_to")), {})
+        current_context = None
+        if request is not None:
+            current_context = text_parts(getattr(request, "system_prompt", "")) + text_parts(getattr(request, "contexts", [])) + text_parts(getattr(request, "prompt", ""))
+            for part in getattr(request, "extra_user_content_parts", []):
+                current_context.extend(text_parts(part if isinstance(part, dict) else getattr(part, "text", "")))
         result = await self.core.recall(
             record["space_id"],
             ContextInput(
                 reply_to_person_id=parent.get("person_id"),
                 person_id=row["person_id"],
                 query=row["content"],
+                current_context=current_context,
                 mention_ids=row["mention_ids"],
                 recent_messages=[
                     {"role": m["role"], "content": m["content"]}
@@ -374,6 +395,10 @@ class Runtime:
         jobs = self.core.jobs(sid)
         last = max(jobs, key=lambda j: j["created_at"]) if jobs else None
         status = f"记忆切片：{len(events)} 件事，{sum(not m['processed'] for m in messages)} 条待整理消息。"
+        health = self.core.embeddings.status(sid)
+        status += f"\n召回：{self.config.get('retrieval_mode', 'local')}；向量已索引 {health['indexed_chunks']}，待索引 {health['pending_chunks']}。"
+        if health['last_error']:
+            status += f"\n向量服务：{health['last_error']}，不可用时自动使用程序召回。"
         if last:
             status += f"\n最近整理：{last['status']}（{last['id']}）"
             if last.get("error"):

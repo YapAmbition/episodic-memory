@@ -1,0 +1,71 @@
+{
+  "name": "lexical",
+  "cases": [
+    {
+      "id": "lexical-01",
+      "query": "陨石一号是什么？",
+      "expected": [
+        "bread1"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "lexical-02",
+      "query": "filelock上限改成多少？",
+      "expected": [
+        "dependency"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "lexical-03",
+      "query": "Memory Slice中文叫什么？",
+      "expected": [
+        "name"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "lexical-04",
+      "query": "8.4秒是哪次测试？",
+      "expected": [
+        "latency"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "lexical-05",
+      "query": "Node.js和npm是安装ZIP必需的吗？",
+      "expected": [
+        "build"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "lexical-06",
+      "query": "私聊3件群聊0件是什么原因？",
+      "expected": [
+        "scope"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    }
+  ]
+}

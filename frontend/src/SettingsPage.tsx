@@ -453,28 +453,6 @@ export function SettingsPage({
           {graphFields.map(field)}
           <div className="setting-row">
             <div>
-              <label>模型扩展联想线索</label>
-              <p>
-                仅在显式选择大模型联想时使用，先分析经历结构再检索；增加一次模型调用。
-              </p>
-            </div>
-            <button
-              className={`switch ${draft.query_expansion_enabled ? "on" : ""}`}
-              role="switch"
-              aria-label="模型扩展联想线索"
-              aria-checked={draft.query_expansion_enabled}
-              onClick={() =>
-                setDraft((d) => ({
-                  ...d,
-                  query_expansion_enabled: !d.query_expansion_enabled,
-                }))
-              }
-            >
-              <span />
-            </button>
-          </div>
-          <div className="setting-row">
-            <div>
               <label>沿反向引用展开</label>
               <p>A 引用 B 时，从 B 也可以尝试唤起 A。</p>
             </div>
@@ -695,7 +673,7 @@ export function SettingsPage({
                 <span>
                   <strong>连接模型</strong>
                   <small>
-                    用于事件整理与对话；大模型联想在召回设置中另行开启
+                    用于事件整理与对话；语义检索使用独立的 embedding 连接
                   </small>
                 </span>
               </label>
@@ -811,7 +789,7 @@ export function SettingsPage({
             )}
           </section>
           <aside className="panel connection-note">
-            <span className="eyebrow">ONE MODEL, THREE USES</span>
+            <span className="eyebrow">CHAT & MEMORY MAINTENANCE</span>
             <h3>在一处连接</h3>
             <div>
               <span>01</span>
@@ -822,7 +800,7 @@ export function SettingsPage({
             <div>
               <span>02</span>
               <p>
-                <strong>可选联想</strong>仅显式开启时理解情境与事件的联系。
+                <strong>维护事件</strong>补充细节、修正记录并维护事件之间的关系。
               </p>
             </div>
             <div>

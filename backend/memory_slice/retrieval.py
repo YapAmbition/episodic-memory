@@ -1,10 +1,9 @@
 """Multi-route candidate retrieval. The index is disposable; events remain canonical."""
 import hashlib
-import json
 import time
 from collections import defaultdict
 
-from .engine import cosine, local_cues, memory_strength
+from .engine import local_cues, memory_strength
 from .store import dt
 from .focus import person_score
 
@@ -101,33 +100,3 @@ def graph_pool(catalog, seeds, config):
                 following.append(target)
         frontier = following
     return list(seen), omitted
-
-
-def excerpts(body, query, max_chars=1200):
-    """Search the whole narrative for useful windows, rather than always its prefix."""
-    windows = [(start, body[start:start + 350]) for start in range(0, len(body), 300)]
-    if not windows:
-        return ""
-    ranked = sorted(windows, key=lambda item: cosine(query, item[1]), reverse=True)
-    selected, used = [], 0
-    for start, text in ranked:
-        if used >= max_chars:
-            break
-        piece = text[:max_chars - used]
-        selected.append((start, piece))
-        used += len(piece)
-    return "\n…\n".join(text for _, text in sorted(selected))
-
-
-def model_catalog(events, query, budget=48000):
-    result, used, omitted = [], 0, []
-    for event in events:
-        item = {key: event.get(key) for key in ("id", "title", "person_ids", "occurred_at", "learned_at", "status", "anchors", "salience", "links")}
-        item["excerpt"] = excerpts(event["body"], query)
-        size = len(json.dumps(item, ensure_ascii=False))
-        if used + size > budget:
-            omitted.append(event["id"])
-            continue
-        result.append(item)
-        used += size
-    return result, omitted

@@ -6,10 +6,10 @@ import {
 } from "../.test-build/retrievalUi.js";
 import { histogram, metric } from "../.test-build/monitoringMetrics.js";
 
-test("mode labels and latency distinguish program and LLM recall", () => {
+test("mode labels and latency distinguish program and embedding recall", () => {
   assert.equal(modeName("auto"), "程序召回");
   assert.equal(modeName("local"), "程序召回");
-  assert.equal(modeName("llm"), "大模型联想");
+  assert.equal(modeName("hybrid"), "语义增强召回");
   assert.equal(latency(8400), "8.40 秒");
   assert.equal(latency(12.345), "12.3 ms");
 });
@@ -20,12 +20,12 @@ test("route and stage histograms can be inspected without mixing purposes", () =
         samples: [
           {
             name: "memory_retrieval_route_duration_seconds_count",
-            labels: { route: "llm" },
+            labels: { route: "embedding" },
             value: 2,
           },
           {
             name: "memory_retrieval_route_duration_seconds_sum",
-            labels: { route: "llm" },
+            labels: { route: "embedding" },
             value: 4,
           },
           {
@@ -54,7 +54,7 @@ test("route and stage histograms can be inspected without mixing purposes", () =
   };
   assert.equal(
     histogram(snapshot, "memory_retrieval_route_duration_seconds", {
-      route: "llm",
+      route: "embedding",
     }).average,
     2,
   );

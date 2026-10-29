@@ -3,9 +3,11 @@ import asyncio
 import os
 import time
 
+from prometheus_client import CONTENT_TYPE_LATEST as CONTENT_TYPE_LATEST
+
 from prometheus_client import (
     CollectorRegistry, Counter, Gauge, Histogram, ProcessCollector,
-    PlatformCollector, generate_latest, CONTENT_TYPE_LATEST,
+    PlatformCollector, generate_latest,
 )
 
 
@@ -35,6 +37,11 @@ class Monitoring:
         self.route_seconds = Histogram("memory_retrieval_route_duration_seconds", "Retrieval route duration", ["route"], buckets=timing_buckets, registry=self.registry)
         self.route_candidates = Histogram("memory_retrieval_route_candidates", "Candidates per route", ["route"], buckets=(0, 1, 3, 5, 10, 20, 40, 120), registry=self.registry)
         self.route_contributions = Histogram("memory_retrieval_route_contributions", "Selected entrances matching each route (overlap allowed)", ["route"], buckets=(0, 1, 3, 5, 12), registry=self.registry)
+        self.embedding_provider = lambda: []
+        self.embedding_health = Gauge("memory_embedding_index_chunks", "Embedding chunks by state", ["state"], registry=self.registry)
+        self.embedding_circuits = Gauge("memory_embedding_open_circuits", "Spaces with open embedding circuit", registry=self.registry)
+        self.embedding_calls = Counter("memory_embedding_requests_total", "Remote embedding calls", ["purpose", "outcome"], registry=self.registry)
+        self.embedding_seconds = Histogram("memory_embedding_duration_seconds", "Embedding time including queue", ["purpose"], buckets=timing_buckets, registry=self.registry)
         self.degradations = Counter("memory_retrieval_degradations_total", "Recall dependency degradations", ["reason"], registry=self.registry)
         self.model_queue_seconds = Histogram("memory_model_queue_wait_seconds", "Model concurrency slot wait", ["purpose"], buckets=timing_buckets, registry=self.registry)
         self.jobs = Counter("memory_maintenance_jobs_total", "Maintenance task outcomes", ["outcome", "trigger"], registry=self.registry)
@@ -67,6 +74,10 @@ class Monitoring:
 
     def refresh(self):
         snapshot = self.store.operational_snapshot()
+        self.embedding_status = self.embedding_provider()
+        for state in ("indexed", "pending"):
+            self.embedding_health.labels(state).set(sum(s[state + "_chunks"] for s in self.embedding_status if s["enabled"]))
+        self.embedding_circuits.set(sum(s["circuit_open"] for s in self.embedding_status))
         self.records.clear()
         for kind, count in snapshot["records"].items():
             self.records.labels(kind=kind).set(count)
@@ -87,6 +98,7 @@ class Monitoring:
             "scope": "current_process", "started_at_unix": self.started,
             "uptime_seconds": round(time.time() - self.started, 2),
             "storage": storage,
+            "embedding": self.embedding_status,
             "metrics": [
                 {"name": family.name, "type": family.type, "help": family.documentation,
                  "samples": [{"name": sample.name, "labels": sample.labels, "value": sample.value}

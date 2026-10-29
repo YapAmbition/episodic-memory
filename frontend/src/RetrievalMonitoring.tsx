@@ -8,7 +8,7 @@ import {
   percentile,
   samples,
 } from "./monitoringMetrics";
-import { modeName, routeNames, stageNames } from "./retrievalUi";
+import { modeName, routeNames, stageNames, routeStates } from "./retrievalUi";
 
 export function RetrievalMonitoring({
   snapshot,
@@ -38,6 +38,14 @@ export function RetrievalMonitoring({
   ];
   return (
     <>
+      <section className="panel monitor-panel">
+        <h2>远程向量健康状态</h2>
+        <p>请求 {count(metric(snapshot, "memory_embedding_requests_total"))} 次 · 平均 {duration(histogram(snapshot, "memory_embedding_duration_seconds").average)} · 开启熔断 {count(metric(snapshot, "memory_embedding_open_circuits"))} 个空间</p>
+        <div className="monitor-table-scroll"><table className="monitor-table"><thead><tr><th>空间</th><th>状态</th><th>已索引 / 待索引</th><th>最近错误</th></tr></thead><tbody>
+          {(snapshot.embedding ?? []).map(s => <tr key={s.space_id}><td>{s.name}</td><td>{!s.enabled ? "未启用" : s.circuit_open ? `冷却 ${s.retry_after_seconds} 秒` : "已启用"}</td><td>{s.indexed_chunks} / {s.pending_chunks}</td><td>{s.last_error ? (routeStates[s.last_error] ?? s.last_error) : "—"}</td></tr>)}
+        </tbody></table></div>
+        <p>向量不可用时自动使用程序召回；索引未完成的事件仍参与程序检索。</p>
+      </section>
       <section className="panel monitor-panel">
         <div className="monitor-panel-title">
           <div>
@@ -91,7 +99,7 @@ export function RetrievalMonitoring({
               <GitBranch size={17} />
               多路召回的实际贡献
             </h2>
-            <p>各程序路径与大模型联想分别观察；同一入口可能命中多路，贡献数不能相加。</p>
+            <p>各程序路径与远程向量分别观察；同一入口可能命中多路，贡献数不能相加。</p>
           </div>
           <span className="monitor-small-tag">
             降级{" "}
@@ -154,7 +162,7 @@ export function RetrievalMonitoring({
                 <Timer size={17} />
                 召回耗时分解
               </h2>
-              <p>候选检索包含模型子步骤，各行不能直接相加。</p>
+              <p>候选检索包含远程向量等待，各行不能直接相加。</p>
             </div>
           </div>
           {!stages.length ? (

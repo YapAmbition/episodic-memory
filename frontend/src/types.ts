@@ -178,7 +178,6 @@ export type Config = {
   retrieval_limit: number;
   graph_candidate_limit: number;
   model_catalog_char_budget: number;
-  query_expansion_enabled: boolean;
   auto_reinforcement_enabled: boolean;
   maintenance_batch_chars: number;
   maintenance_input_token_budget: number;
@@ -194,7 +193,7 @@ export type Config = {
   maintenance_prompt: string;
   simulator_prompt: string;
 };
-export type RetrievalMode = "local" | "llm";
+export type RetrievalMode = "local" | "hybrid";
 export type Capabilities = {
   default_retrieval_mode: RetrievalMode;
   retrieval_modes: Record<
@@ -226,6 +225,7 @@ export type MetricFamily = {
   samples: MetricSample[];
 };
 export type MonitoringSnapshot = {
+  embedding?: {space_id: string; name: string; enabled: boolean; indexed_chunks: number; pending_chunks: number; last_error: string | null; circuit_open: boolean; retry_after_seconds: number}[];
   scope: string;
   started_at_unix: number;
   uptime_seconds: number;

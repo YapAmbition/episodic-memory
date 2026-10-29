@@ -1,6 +1,6 @@
 # 运行监控
 
-0.6.0 的「运行监控」展示整个服务的请求、模型、召回、整理、关注筛选、存储和进程状态；切换空间不改变范围。公共核心也可通过 `service.metrics.snapshot()` / `.prometheus()` 直接读取。
+0.7.0 的「运行监控」展示整个服务的请求、模型、召回、整理、关注筛选、存储和进程状态；切换空间不改变范围。公共核心也可通过 `service.metrics.snapshot()` / `.prometheus()` 直接读取。
 
 ## 接口
 
@@ -19,7 +19,9 @@
 - 关注：`memory_focus_messages_total{outcome}`，包括 `scanned`、`candidates`、`retained`、`ignored`、`deferred`、`expired`；按处理次数累计，不是去重人数或唯一消息数。
 - 其他：`memory_processed_messages_total`、`memory_reinforcements_total`、`memory_recall_feedback_total`、`memory_scheduler_errors_total`、`memory_records`、`memory_maintenance_tasks`、`memory_pending_messages`、`memory_database_bytes`、`memory_uptime_seconds`。
 
-embedding 指标、索引状态和前端卡片已移除。不要将旧版本的语义召回仪表盘直接作为本版状态。
+远程向量：`memory_embedding_requests_total{purpose,outcome}`（purpose 为 index/query/test）、`memory_embedding_duration_seconds{purpose}`（含排队时间）、`memory_embedding_index_chunks{state}`（indexed/pending，统计已启用空间）、`memory_embedding_open_circuits`。向量请求不自动重试，熔断拦截不计远程调用。`memory_retrieval_degradations_total{reason}` 记录召回降级及索引部分就绪；相关路径标签为 `embedding`。
+
+JSON 快照新增 `embedding` 列表，按空间提供 enabled、indexed_chunks、pending_chunks、last_error、circuit_open、retry_after_seconds；不输出 URL 或密钥。前端展示空间索引状态、最近错误与冷却时间。
 
 ## 解释规则
 

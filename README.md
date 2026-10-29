@@ -4,12 +4,12 @@
 
 记忆切片是一个可独立部署的后端，配套 **React 管理界面和对话实验室**。它记录事情的经过、来源、人物和关联，根据当前对话寻找入口事件，再沿关联读取原文，生成可注入模型的记忆上下文。如何回应、什么时候提起这些记忆，由接入的 agent 自己决定。
 
-当前源码版本：**0.6.0**。技术栈：**FastAPI · SQLite · React · TypeScript · Vite**。
+当前源码版本：**0.7.0**。技术栈：**FastAPI · SQLite · React · TypeScript · Vite**。
 
 ## 功能
 
 - **事件记忆**：详细正文、原始来源、锚点、版本和 `[[事件ID]]` 关联；整理可新建、追加、更正、合并或拆分事件，并非每次整理必定新增一件事。
-- **多路召回**：默认程序查找，可选显式大模型联想；综合内容、时间、鲜明度与人物线索，展开关联后返回上下文。
+- **多路召回**：默认程序查找，可选远程 embedding 语义检索；综合内容、时间、鲜明度与人物线索，展开关联后返回上下文。
 - **时间与淡忘**：记忆随时间降低可唤起程度，真实重提可以强化；淡忘不删除或改写事件正文。
 - **单人关注与群聊**：每个空间可关注一个人，支持名字、别名和平台 UID；消息独立标记发送者、回复对象与 @。未配置关注对象时关闭人物召回权重。
 - **后台整理**：手动或定时执行，支持输入预算、长消息分段、旧事件补读、超限缩批和失败诊断。
@@ -18,46 +18,44 @@
 
 ## 两种运行方式
 
-- **独立服务**：FastAPI + React，按照下方 Docker 或本地开发步骤启动。
+- **独立服务**：FastAPI + React，默认按下方本机开发步骤启动（不需要 Docker）。
 - **嵌入应用**：`pip install .` 安装公共核心，通过 `MemoryService` 调用，不启动 Web 服务。见 [核心接口与生命周期](docs/core-architecture.md)。
 
-已拆分公共核心，并提供 **AstrBot 内嵌插件 0.2.1**，可在插件配置中开启内置 React 管理网页，无需单独部署服务；见 [安装与配置](plugins/astrbot_plugin_memory_slice/README.md)。旧数据库的语义默认模式会迁移为程序召回，事件和原始消息保留；旧向量数据不再使用。`auto` 请求仍作为 `local` 的兼容别名，`hybrid` 请求不再支持。
+已拆分公共核心，并提供 **AstrBot 内嵌插件 0.3.0**，可在插件配置中开启内置 React 管理网页，无需单独部署服务；见 [安装与配置](plugins/astrbot_plugin_memory_slice/README.md)。旧 `llm` 默认模式迁移为程序召回，事件和原始消息保留；早期版本向量数据不复用。`auto` 是 `local` 的兼容别名，`hybrid` 使用可选远程向量并自动降级。
 
-## 快速启动
+## 获取 AstrBot 插件 ZIP
 
-需要安装 Docker 和 Docker Compose。在项目根目录运行：
+在 GitHub 仓库的 **Actions → Build AstrBot Plugin ZIP → Run workflow** 手动构建。成功后从该运行的 **Artifacts** 下载，解压外层 ZIP，再把里面的插件 ZIP 上传到 AstrBot。详见 [GitHub 构建说明](plugins/astrbot_plugin_memory_slice/README.md#在-github-上构建-zip)。
 
-```bash
-cp .env.example .env
-docker compose up --build -d
-```
+## 快速启动（本机开发）
 
-启动后访问：
-
-| 地址 | 用途 |
-| --- | --- |
-| http://127.0.0.1:8000 | 管理页面与对话实验室 |
-| http://127.0.0.1:8000/docs | 交互式 API 文档 |
-| http://127.0.0.1:8000/api/health | 健康检查 |
-
-首次启动默认导入**虚构示例**，可以在页面创建自己的空白记忆空间。如果不需要示例，在首次启动前将 `.env` 中的 `SEED_DEMO` 改为 `false`。
-
-常用命令：
+需要 Python 3.9+（推荐 3.12）和 Node.js 20.19+ 或 22.12+。在项目根目录运行：
 
 ```bash
-# 查看运行情况和日志
-docker compose ps
-docker compose logs -f memory
-
-# 停止、启动已有容器
-docker compose stop
-docker compose start
-
-# 修改或更新源码后，重新构建并替换容器
-docker compose up --build -d
+# 首次安装依赖；已有 .venv 和 node_modules 时不必重复
+./scripts/dev.sh setup
+# 后台启动 Python 后端和 Vite 开发服务器
+./scripts/dev.sh start
 ```
 
-`restart` 只重启现有容器，不会加载修改后的源码。上面的 Compose 命令管理从本项目启动的 Compose 实例，不会更新其他手工创建的容器。
+- 页面：http://127.0.0.1:5173 ，React 源码修改后自动热更新，无需构建镜像或打包前端。
+- API：http://127.0.0.1:8000 ，文档 `/docs`，健康检查 `/api/health`。
+- 数据保存在项目 `data/`；默认不自动添加示例。
+
+```bash
+./scripts/dev.sh status           # 查看两个进程
+./scripts/dev.sh restart-backend  # 后端代码修改后重启；前端不受影响
+./scripts/dev.sh stop             # 停止两个进程，保留数据
+# 查看日志
+tail -f .run/backend.log
+tail -f .run/frontend.log
+```
+
+启动脚本从任意目录调用均可，读取项目根目录 `.env`。可设置 `MEMORY_BACKEND_PORT`（8000）、`MEMORY_FRONTEND_PORT`（5173）和 `MEMORY_DATA_DIR`；前端 API 代理自动跟随后端端口。启动器只停止自己记录且命令匹配的进程，端口被其他服务占用时会报错，不会杀掉其他程序。
+
+数据库配置与事件重启后保留；仅存在内存的模型密钥会随后端重启清除。可在 `.env` 设置 `MODEL_API_KEY` / `EMBEDDING_API_KEY`，或重启后重新在页面填写。`.env`、`.venv`、`data/`、`.run/` 和备份均不提交 Git。
+
+Docker 构建文件仅保留为可选部署资料，日常开发不再构建或启动 Docker。
 
 ## 首次配置
 
@@ -72,18 +70,24 @@ docker compose up --build -d
 | 功能 | 模型要求 |
 | --- | --- |
 | 程序召回 | 无需模型 |
-| 大模型联想召回 | 显式启用 `llm`，使用生成式模型 |
+| 语义增强召回 | 选择 `hybrid` 并配置远程 embedding 地址、模型名和密钥；失败自动退回程序召回 |
 | 对话实验室真实聊天 | 需要生成式模型；未配置时为标注清楚的规则回放 |
 | 理解、切分和更新事件 | 需要整理模型；聊天与整理共用模型连接 |
 | 未配置关注对象的本地整理 | 无模型时按会话归档原文，不进行语义事件切分 |
 | 开启关注对象的整理 | 需要模型判断关联；未配置时暂缓，消息受临时保留期限约束 |
 
-配置聊天模型不会自动启用大模型召回。本版已移除 embedding 功能。
+配置聊天模型不会自动启用语义召回。已移除生成式 LLM 联想召回；整理和聊天仍可使用生成式模型。
 
 ### 召回模式
 
 - `local`：只使用程序召回。
-- `llm`：显式调用生成式模型扩展线索、判断关联，增加耗时与用量。
+- `hybrid`：程序检索与远程向量检索融合，再按人物、时间与鲜明度评分并展开事件链接。向量不可用时返回程序检索结果。
+
+在「召回设置 → 远程语义检索」配置兼容 OpenAI Embeddings 的基础地址（例如 `https://example.com/v1`，自动追加 `/embeddings`）、模型名和密钥。开启后后台每轮最多索引 8 个片段，轮询间隔 5 秒；索引未完成的事件仍可程序召回。修改事件或更换服务、模型、维度后自动补建，不复用过期向量。
+
+请求总超时默认 1.5 秒（含并发排队），不在查询中重试；连续失败 3 次后暂停 30 秒，冷却后允许一个请求探测恢复。超时、网络错误、鉴权失败、限流、无效向量均降级，可从召回轨迹及运行监控查看原因。默认不安装本地模型，也不连接远程向量。
+
+页面提交的向量密钥仅存于服务内存，重启后需重新填写，或使用 `EMBEDDING_API_KEY`。AstrBot 从自己的插件配置重新载入密钥。显式旧 `retrieval_mode="llm"` / `use_model=true` API 请求返回 422，请改用 `local` 或 `hybrid`。
 
 
 ### 环境变量
@@ -97,6 +101,7 @@ docker compose up --build -d
 | `MEMORY_API_TOKEN` | 业务接口令牌；为空时不要求认证 |
 | `MEMORY_METRICS_TOKEN` | `/metrics` 令牌；为空时沿用业务令牌 |
 | `MODEL_API_KEY` | 可选生成式模型密钥；模型名与地址在页面配置 |
+| `EMBEDDING_API_KEY` | 可选远程向量密钥，供已开启 embedding 的空间使用 |
 | `MODEL_MAX_CONCURRENT` | `3`，模型并发上限 |
 | `SEED_DEMO` | `true`，首次启动是否创建示例 |
 
@@ -147,7 +152,7 @@ curl -X POST 'http://127.0.0.1:8000/api/v1/spaces/YOUR_SPACE_ID/context' \
 
 ## 数据与备份
 
-SQLite 保存事件、消息、版本、配置和任务历史，Compose 使用 `memory-data` 命名卷持久化。普通停止、启动和重建容器会复用卷；**`docker compose down -v` 会删除卷，不要用它更新服务。**
+SQLite 保存事件、消息、版本、配置和任务历史。本机开发使用项目 `data/` 目录，重启不会清空数据。旧 Compose 部署使用 `memory-data` 命名卷持久化。普通停止、启动和重建容器会复用卷；**`docker compose down -v` 会删除卷，不要用它更新服务。**
 
 备份应使用 SQLite 在线备份机制，或停止服务后备份完整数据卷；运行中只复制数据库主文件可能漏掉 WAL 数据。升级前先备份，部署时继续挂载原来的卷。
 
@@ -155,7 +160,7 @@ SQLite 保存事件、消息、版本、配置和任务历史，Compose 使用 `
 
 ## 本地开发
 
-需要 Python 3.9+，Node.js 20.19+ 或 22.12+。Docker 构建使用 Python 3.12 与 Node.js 24。
+推荐使用上方 `scripts/dev.sh` 管理进程。也可在两个终端前台启动：
 
 在项目根目录启动后端：
 
@@ -163,7 +168,7 @@ SQLite 保存事件、消息、版本、配置和任务历史，Compose 使用 `
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r backend/requirements.txt
-PYTHONPATH=backend uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+SEED_DEMO=false PYTHONPATH=backend uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
 另开终端启动前端：
@@ -190,7 +195,7 @@ npm run build --prefix frontend
 docker compose config --quiet
 ```
 
-0.6.0 已通过公共核心与 HTTP 适配回归测试、前端测试和生产构建，详见 [测试报告](docs/test-report-0.6.0.md)。模型测试使用可控替身，验证流程与数据一致性，不代表真实模型的语义准确率。
+0.7.0 已通过 127 项核心/接口测试、28 项插件测试、17 项前端测试和生产构建，详见 [测试报告](docs/test-report-0.7.0.md)。模型测试使用可控替身，验证流程与数据一致性，不代表真实模型的语义准确率。
 
 - `GET /api/health`：健康与版本，不需要认证。
 - `GET /api/v1/monitoring`：JSON 监控快照，使用业务令牌。
@@ -227,3 +232,11 @@ compose.yaml       服务与持久化卷
 - [后端接口说明](docs/backend-api-design.md)
 - [单人关注与群聊接入](docs/focused-memory.md)
 - [监控说明](monitoring/README.md)
+
+### 固定召回质量回归
+
+```bash
+.venv/bin/python scripts/evaluate_recall.py --compare evals/recall/baselines/local-v1.json
+```
+
+使用隔离临时数据库，默认不联网；28 个固定问题覆盖关键词、语义改写、关联、追问与无答案边界。输出逐题结果、Recall@5、Hit@5、误召回率及耗时，有逐题退步时返回非零退出码。数据范围、真实 Embedding 测试与指标定义见 [召回测试集说明](evals/recall/README.md)。

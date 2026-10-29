@@ -1,12 +1,12 @@
 # 记忆切片 · Memory Slice for AstrBot
 
-插件版本 **0.2.1**，内嵌 Memory Slice **0.6.0** 核心。无需另外部署 Docker、HTTP 服务或配置 embedding。模型整理复用 AstrBot 已配置的聊天模型。
+插件版本 **0.3.1**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
 
 ## 安装
 
 要求 **AstrBot >= 4.24.0**，使用其内置 LLM/Agent 流程。该最低版本来自本轮临时内容块 API；不支持绕过版本限制安装到旧版。外接 Dify 等未触发标准请求钩子的执行器尚未适配。
 
-1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.2.1.zip`。
+1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.1.zip`。
 2. 如果使用手工安装，将 ZIP 中的 `astrbot_plugin_memory_slice` 文件夹放到 AstrBot 的 `data/plugins/` 下；在 AstrBot 的 Python 环境安装该目录的 `requirements.txt`，然后重载插件。
 3. 插件配置中选择已有聊天模型；留空时跟随当前会话。无需填写新的 API Key 或模型地址。
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
@@ -26,7 +26,7 @@
 | focus_platform | 空 | UID 所属的平台实例 ID；空值应用于所有实例，多平台时建议明确填写 |
 | group_ids | [] | 群 ID 白名单；空列表允许所有群 |
 | provider_id | 空 | AstrBot 已配置的聊天模型；空值跟随会话 |
-| retrieval_mode | local | local 程序多路召回；llm 显式使用模型联想 |
+| retrieval_mode | local | local 程序多路召回；hybrid 程序 + 远程向量，异常自动降级 |
 | auto_maintain | true | 开启后台定时整理 |
 | interval_minutes | 60 | 整理间隔，1–10080 分钟 |
 | model_timeout_seconds | 60 | 单次记忆模型调用超时 |
@@ -58,7 +58,7 @@
 需要 AstrBot 管理员权限：
 
 - `/记忆身份`：查看当前发送者 UID、平台实例 ID、群 ID，便于填写配置。
-- `/记忆状态`：查看当前空间事件数、待整理数、最近整理任务状态和安全错误信息。
+- `/记忆切片`：查看当前空间事件数、待整理数、最近整理任务状态和安全错误信息。
 - `/记忆整理`：提交后台整理任务，不阻塞正常聊天。随后用状态指令查看结果。
 
 指令不回显记忆正文。自动整理没有群内通知。模型调用计数、耗时和真实 token 用量由核心监控记录；宿主可通过 `runtime.core.metrics.snapshot()` / `prometheus()` 读取，启用下方管理网页后，也可通过带访问令牌的 `/api/v1/monitoring` 和 `/metrics` 查看。
@@ -83,7 +83,7 @@
 - **整理与监控**：手动整理、查看任务失败详情、模型用量和运行指标。旧关注身份的停用空间可查看，但不能启动整理。
 - **记忆设置**：只读展示；模型、关注对象、定时整理等继续在 AstrBot 配置，保存后重载插件。
 
-端口冲突、缺少前端资源或令牌不合要求时，网页启动失败会写入 AstrBot 日志，也可用 `/记忆状态` 查看；记忆插件继续运行。重载/卸载插件会关闭网页并释放端口。关闭网页不会清空数据。
+端口冲突、缺少前端资源或令牌不合要求时，网页启动失败会写入 AstrBot 日志，也可用 `/记忆切片` 查看；记忆插件继续运行。重载/卸载插件会关闭网页并释放端口。关闭网页不会清空数据。
 
 ## 实际行为与隔离
 
@@ -110,6 +110,20 @@ plugin_data/astrbot_plugin_memory_slice/
 
 更新插件不会覆盖此目录。停止插件后备份整个数据目录，或使用 SQLite 在线备份。不要直接复制正在写入的主数据库文件而遗漏 WAL，也不要让独立 Web 服务同时操作插件数据库。现有 8092 服务的数据不自动导入插件，插件从自己的空数据库开始。
 
+## 在 GitHub 上构建 ZIP
+
+仓库提供 `.github/workflows/build-astrbot-plugin.yml`，无需单独创建插件发布仓库，也不需要在本机安装 Node.js。
+
+1. 将项目代码及工作流文件推送到自己的 GitHub 仓库。工作流必须先出现在默认分支，才能在页面手动运行。
+2. 打开 **Actions → Build AstrBot Plugin ZIP → Run workflow**，选择包含最新修改的分支，启动构建。
+3. 工作流安装 Python 3.12、Node.js 24 和依赖，测试前端、构建插件 ZIP，再运行插件与后端测试；全部成功才上传安装包。
+4. 打开成功的运行记录，在 **Artifacts** 下载 `memory-slice-astrbot-运行编号`。下载需要登录 GitHub，并拥有仓库读取权限。
+5. **先解压 GitHub 下载的外层 ZIP**，里面的 `astrbot_plugin_memory_slice-v版本.zip` 才是给 AstrBot 上传的安装包。
+
+构建产物保留 90 天（也受仓库/组织上限约束）。这个流程只生成下载产物，不创建 Release，不发布插件市场。需要长期对外提供下载时，可以把内层插件 ZIP 手动附到 GitHub Release；公开仓库的 Release 下载更方便。
+
+不需要填写模型 API Key 或新增 GitHub Secrets，测试使用模拟宿主。GitHub 构建通过不代表 Windows + AstrBot 实机已经验收。
+
 ## 开发与测试
 
 构建需要 Python 3.9+ 与 Node.js 20.19+ 或 22.12+；安装已打包 ZIP 的 AstrBot 主机不需要 Node.js。在 Memory Slice 项目根目录：
@@ -122,10 +136,29 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 构建脚本先在本机执行 React 生产构建（首次自动执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
-默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.2.1.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
+默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.1.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 
 当前通过 25 项插件测试、113 项核心/HTTP 回归测试和 17 项前端工具测试。新增覆盖网页鉴权、同实例共享、只读配置、事件编辑、整理、端口释放及重启。插件测试使用真实共享核心、SQLite 和模拟 AstrBot 宿主，覆盖事件整理/召回、群聊筛选与隔离、重载、去重、超时取消、模型输出截断、临时注入、发送后记录、故障不阻断聊天及包内核心一致性。
 
 **尚未在实际运行的 AstrBot + QQ 群环境联调，不将模拟测试等同于实机通过。** 首次验收建议使用测试群：配置关注对象，聊一件有独特细节的事，执行整理并确认完成，再用相关表达触发回忆；换另一个群确认不串记忆，重载后确认仍能召回。流式模式、@/回复和不唤醒机器人时的群消息到达情况也应一并验证。
 
 接口依据：[AstrBot 消息钩子](https://docs.astrbot.app/dev/star/guides/listen-message-event.html)、[模型接口](https://docs.astrbot.app/dev/star/guides/ai.html)、[插件配置](https://docs.astrbot.app/dev/star/guides/plugin-config.html)、[数据目录](https://docs.astrbot.app/dev/star/guides/storage.html)。
+
+## 可选远程向量召回（0.3.1）
+
+在 AstrBot 插件配置设置 `retrieval_mode=hybrid`、`embedding_enabled=true`，填写 `embedding_base_url`（例如 `https://example.com/v1`）、`embedding_model` 和 `embedding_api_key`，保存并重载插件。调用的是该地址的 `/embeddings`，不复用聊天模型，不下载本地模型。
+
+`embedding_timeout_seconds` 默认 1.5 秒；`embedding_failure_threshold` 默认 3 次，`embedding_cooldown_seconds` 默认 30 秒。超时、连接失败、401/403、429、服务器错误及错误向量响应均退回程序召回，不阻止聊天注入和回复保存。冷却后允许单个探测请求，成功自动恢复。
+
+后台自动分片建立索引，事件编辑、更换模型后补建，未就绪时使用程序查找。`/记忆切片` 可查看索引进度和安全错误分类，管理网页的设置页只读展示连接状态，运行监控展示索引和熔断指标。群/私聊仍按原有空间隔离。旧 `llm` 配置升级为 `local`；生成式模型仅负责整理，召回不调用它。
+
+
+### 请求上下文与记忆去重
+
+核心 `/context` 输入新增可选 `current_context: string[]`，传入当前模型请求中实际存在的文本块（包括系统提示、历史、本轮输入和额外文本）。不传时保持原有召回行为；不要用永久会话历史代替实际请求。核心扫描全部文本检查完整记忆块，查询线索按近期字符预算选择，并排除协议记忆及规则块，不把全部上下文发送给 Embedding。
+
+事件输出使用 `<memory-slice id="event_123" revision="2" supersedes="1">完整正文</memory-slice>`；revision 复用事件存储版本，修改事件会递增。正文 XML 转义。同 ID 在当前上下文已有同版或更新版本时跳过，旧版则输出最新完整记录，去重原因位于 `omitted`。旧 `<event>` 格式不会误判为新版协议。
+
+规则使用 `<memory-slice-rules version="1">…</memory-slice-rules>`；有记忆输出且当前上下文缺少本版完整规则时附带。上下文裁剪后可再次注入，不维护会话永久已读状态。规则占用上下文字符预算。标签检测不是安全认证，接入方应传递真实请求内容。
+
+AstrBot 插件从 ProviderRequest 传递当前可见文本，仍使用临时注入，不修改历史；后续框架裁剪或其他插件修改不在此快照内。状态命令为 `/记忆切片`，召回仅支持 local/hybrid；hybrid 可能增加聊天延迟，失败自动降级。

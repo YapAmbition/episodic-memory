@@ -80,11 +80,21 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
             (await self.client.get("/api/v1/runtime")).json()["mode"], "astrbot"
         )
 
+    async def test_embedding_status_and_monitoring_are_readable(self):
+        response = await self.client.get(self.base + "/embedding")
+        self.assertEqual(response.status_code,200)
+        self.assertNotIn("api_key",response.json())
+        snapshot = (await self.client.get("/api/v1/monitoring")).json()
+        self.assertEqual(snapshot["embedding"][0]["space_id"],self.sid)
+        self.assertIn("memory_embedding_open_circuits",(await self.client.get("/metrics")).text)
+
     async def test_managed_config_and_fake_messages_cannot_be_changed(self):
         for method, path, body in [
             ("post", "/api/v1/spaces", {"name": "fake"}),
             ("put", self.base + "/config", {}),
             ("put", self.base + "/model", {}),
+            ("put", self.base + "/embedding", {}),
+            ("post", self.base + "/embedding/test", {}),
             ("post", self.base + "/persons", {"name": "fake"}),
             ("post", self.base + "/conversations", {}),
             (

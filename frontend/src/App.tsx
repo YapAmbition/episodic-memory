@@ -1,3 +1,5 @@
+import { RecallBenchmark } from "./RecallBenchmark";
+import { EmbeddingSettings } from "./EmbeddingSettings";
 import { PluginConsole, PluginConfiguration } from "./PluginConsole";
 import { MaintenanceDetails } from "./MaintenanceDetails";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -73,13 +75,14 @@ import {
 } from "./retrievalUi";
 import "./retrieval.css";
 
-type Page = "lab" | "events" | "graph" | "settings" | "monitoring" | "api";
+type Page = "lab" | "events" | "graph" | "settings" | "monitoring" | "benchmark" | "api";
 const pages = [
   { id: "lab", label: "对话实验室", icon: MessageCircle },
   { id: "events", label: "事件记忆", icon: BookOpen },
   { id: "graph", label: "关联网络", icon: Network },
   { id: "settings", label: "记忆设置", icon: Settings2 },
   { id: "monitoring", label: "运行监控", icon: Activity },
+  { id: "benchmark", label: "召回测试", icon: FlaskConical },
   { id: "api", label: "API 接入", icon: Code2 },
 ] as const;
 const statusLabel: Record<string, string> = {
@@ -122,7 +125,7 @@ export default function App() {
   const managed = hostMode === "astrbot";
   const visiblePages = pages.filter(p => !managed || p.id !== "api").map(p => ({...p, label: managed && p.id === "lab" ? "插件会话" : p.label}));
   const [page, setPage] = useState<Page>(() =>
-    window.location.hash === "#monitoring" ? "monitoring" : "lab",
+    window.location.hash === "#benchmark" ? "benchmark" : window.location.hash === "#monitoring" ? "monitoring" : "lab",
   );
   const [spaces, setSpaces] = useState<Space[]>([]),
     [sid, setSid] = useState("");
@@ -593,6 +596,8 @@ export default function App() {
           {visiblePages.map((p) => (
             <button
               key={p.id}
+              aria-label={p.label}
+              title={p.label}
               className={`nav-item ${page === p.id ? "active" : ""}`}
               aria-current={page === p.id ? "page" : undefined}
               onClick={() => {
@@ -602,7 +607,7 @@ export default function App() {
                   "",
                   window.location.pathname +
                     window.location.search +
-                    (p.id === "monitoring" ? "#monitoring" : ""),
+                    (p.id === "benchmark" ? "#benchmark" : p.id === "monitoring" ? "#monitoring" : ""),
                 );
                 setError("");
               }}
@@ -628,7 +633,7 @@ export default function App() {
             className={`service-dot ${serviceConnected ? "" : "offline"}`}
           />
           <span>{serviceConnected ? "记忆服务已连接" : "等待服务连接"}</span>
-          <small>{managed ? "AstrBot · v0.2.1" : "v0.6.0"}</small>
+          <small>{managed ? "AstrBot · v0.3.0" : "v0.7.0"}</small>
         </div>
       </aside>
       <main className="main">
@@ -697,6 +702,7 @@ export default function App() {
           </div>
         ) : (
           <div className="page-content">
+            {page === "benchmark" && <RecallBenchmark sid={sid} />}
             {page === "lab" && managed && spaces.find(s => s.id === sid) && <PluginConsole key={sid} space={spaces.find(s => s.id === sid)!} stats={stats} onMaintain={maintain} onJobs={() => setShowJobs(true)} busy={jobs.some(j => ["queued", "running"].includes(j.status))} />}
             {page === "lab" && !managed && (
               <>
@@ -856,8 +862,8 @@ export default function App() {
                   <span>
                     {(retrievalMode === "default"
                       ? config?.default_retrieval_mode
-                      : retrievalMode) === "llm"
-                      ? "将调用生成式模型"
+                      : retrievalMode) === "hybrid"
+                      ? "将尝试远程向量，故障时自动降级"
                       : "历史会话只读取已有结果；点击重新唤起才会检索"}
                   </span>
                 </div>
@@ -1142,8 +1148,8 @@ export default function App() {
                                 <span>
                                   {trace.effective_mode
                                     ? modeName(trace.effective_mode)
-                                    : trace.strategy === "hybrid_llm"
-                                      ? "模型联想"
+                                    : trace.strategy === "hybrid_embedding"
+                                      ? "语义增强"
                                       : "本地锚点"}
                                 </span>
                               </div>
@@ -1407,7 +1413,7 @@ export default function App() {
             {page === "graph" && (
               <GraphPage events={events} onOpen={setEventModal} />
             )}
-            {page === "settings" && managed && config && <PluginConfiguration config={config} />}
+            {page === "settings" && managed && config && <><PluginConfiguration config={config} /><EmbeddingSettings key={sid} sid={sid} readOnly onError={(e) => setError(String(e))} /></>}
             {page === "settings" && !managed && config && model && (
               <SettingsPage
                 sid={sid}

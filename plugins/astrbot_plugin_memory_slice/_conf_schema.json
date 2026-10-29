@@ -37,16 +37,16 @@
   "provider_id": {
     "type": "string",
     "default": "",
-    "description": "整理与模型联想使用的聊天模型；留空跟随会话",
+    "description": "整理使用的聊天模型；留空跟随会话",
     "_special": "select_provider"
   },
   "retrieval_mode": {
     "type": "string",
     "default": "local",
-    "description": "召回方式：local 程序召回 / llm 大模型联想",
+    "description": "召回方式：local 程序召回 / hybrid 程序 + 远程向量（可能增加聊天延迟，失败自动降级）",
     "options": [
       "local",
-      "llm"
+      "hybrid"
     ]
   },
   "auto_maintain": {
@@ -78,7 +78,7 @@
     "type": "list",
     "default": [
       "/",
-      "记忆状态",
+      "记忆切片",
       "记忆整理"
     ],
     "description": "忽略这些前缀的消息（例如指令）"
@@ -110,5 +110,51 @@
     "default": "",
     "secret": true,
     "description": "管理页面访问令牌：启用前填写至少 16 位 ASCII 字符；请勿使用模型 API Key"
+  },
+  "embedding_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "启用远程向量索引；召回方式选择 hybrid 后参与召回"
+  },
+  "embedding_base_url": {
+    "type": "string",
+    "default": "",
+    "description": "Embedding 服务基础地址，例如 https://example.com/v1（自动追加 /embeddings）"
+  },
+  "embedding_model": {
+    "type": "string",
+    "default": "",
+    "description": "Embedding 模型名称"
+  },
+  "embedding_api_key": {
+    "type": "string",
+    "default": "",
+    "description": "Embedding API Key",
+    "secret": true
+  },
+  "embedding_timeout_seconds": {
+    "type": "float",
+    "default": 1.5,
+    "description": "向量请求总超时（秒，0.1–10），超时自动降级"
+  },
+  "embedding_failure_threshold": {
+    "type": "int",
+    "default": 3,
+    "description": "连续失败多少次后暂停请求（1–10）"
+  },
+  "embedding_cooldown_seconds": {
+    "type": "int",
+    "default": 30,
+    "description": "熔断冷却秒数（1–600）"
+  },
+  "embedding_dimensions": {
+    "type": "int",
+    "default": 0,
+    "description": "可选向量维度；0 由服务决定（1–16384）"
+  },
+  "embedding_min_similarity": {
+    "type": "float",
+    "default": 0.45,
+    "description": "最低语义相似度（0–1），可按模型效果调整"
   }
 }

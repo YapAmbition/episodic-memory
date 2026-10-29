@@ -58,6 +58,8 @@ def build(output, build_frontend=True):
             files[path.name] = path.read_bytes()
     for path in (ROOT / "backend" / "memory_slice").glob("*.py"):
         files["memory_slice/" + path.name] = path.read_bytes()
+    for path in (ROOT / "evals" / "recall").rglob("*.json"):
+        files["memory_slice/benchmark_data/" + path.relative_to(ROOT / "evals" / "recall").as_posix()] = path.read_bytes()
     for path in (frontend / "dist").rglob("*"):
         if path.is_file() and path.name != "source-manifest.json":
             files["frontend/" + path.relative_to(frontend / "dist").as_posix()] = (
@@ -80,7 +82,7 @@ def build(output, build_frontend=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v0.2.1.zip")))
+    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v0.3.1.zip")))
     parser.add_argument(
         "--skip-frontend-build",
         action="store_true",

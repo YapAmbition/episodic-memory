@@ -42,7 +42,7 @@ class RetrievalTests(unittest.TestCase):
         async def complete(*args, **kwargs):
             purposes.append(kwargs['purpose'])
             return '这是聊天回复。'
-        with patch('memory_slice.model.complete', complete), patch('memory_slice.service.expand_query', side_effect=AssertionError('expansion')), patch('memory_slice.service.association_matches', side_effect=AssertionError('association')):
+        with patch('memory_slice.model.complete', complete):
             result = self.client.post(self.prefix + '/conversations/' + self.cid + '/chat', json={'content': '陨石一号', 'at': NOW.isoformat()})
         self.assertEqual(result.status_code, 200, result.text)
         self.assertEqual(purposes, ['chat'])
@@ -51,8 +51,9 @@ class RetrievalTests(unittest.TestCase):
     def test_legacy_modes_and_conflict_are_explicit(self):
         self.assertEqual(self.context(use_model=False).json()['requested_mode'], 'local')
         self.assertEqual(self.context(use_model=True).status_code, 422)
+        self.assertEqual(self.context(retrieval_mode='llm').status_code, 422)
         self.assertEqual(self.context(use_model=False, retrieval_mode='auto').status_code, 422)
-        self.assertEqual(self.context(retrieval_mode='hybrid').status_code, 422)
+        self.assertEqual(self.context(retrieval_mode='hybrid').status_code, 200)
 
     def test_route_switches_and_default_mode_are_applied(self):
         self.create_event()

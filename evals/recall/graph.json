@@ -1,0 +1,54 @@
+{
+  "name": "graph",
+  "cases": [
+    {
+      "id": "graph-01",
+      "query": "过期酵母那次，以及上一次尝试发生了什么？",
+      "expected": [
+        "bread2",
+        "bread1"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "graph-02",
+      "query": "新酵母成功之前，为什么失败？",
+      "expected": [
+        "bread3",
+        "bread2"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "graph-03",
+      "query": "从陨石一号到第二次，经历了什么？",
+      "expected": [
+        "bread1",
+        "bread2"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "graph-04",
+      "query": "第三次面包成功前两次有什么经历？",
+      "expected": [
+        "bread1",
+        "bread2",
+        "bread3"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    }
+  ]
+}

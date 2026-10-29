@@ -26,3 +26,9 @@ frontend/.test-build/
 
 # Built plugin archives
 /dist/
+
+# Local development processes and logs
+.run/
+
+# Generated recall evaluation reports
+/eval-results/

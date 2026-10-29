@@ -46,8 +46,6 @@ import { MaintenanceMonitoring } from "./MaintenanceMonitoring";
 import { RetrievalMonitoring } from "./RetrievalMonitoring";
 
 const purposeNames: Record<string, string> = {
-  query_expansion: "线索扩展",
-  association: "联想判断",
   maintenance: "事件整理",
   chat: "模拟对话",
   connection_test: "连接测试",
@@ -784,7 +782,7 @@ export function MonitoringPage({
             {!view.models.length ? (
               <Empty>
                 <strong>还没有模型调用</strong>
-                <p>使用线索扩展、联想或整理后，这里会显示对应的调用与用量。</p>
+                <p>使用整理或模拟对话后，这里会显示对应的调用与用量。向量请求在远程向量面板单独统计。</p>
               </Empty>
             ) : (
               <div className="monitor-table-scroll">

@@ -11,14 +11,16 @@ from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
+from .context_protocol import query_dialogue
 from .diagnostics import job_diagnostic
 from .focus import select_messages, focus_prompt, validate_focus, cleanup_buffer
 from .conversation import ordered_messages
 from .engine import build_context, event_view, strength_curve
-from .model import association_matches, parse_json, expand_query, ContextLimitError, OutputLimitError
+from .model import parse_json, ContextLimitError, OutputLimitError
 from .maintenance_context import prepare as prepare_maintenance, supplement as supplement_maintenance, budget_for
 from .monitoring import Monitoring
-from .retrieval import shortlist, graph_pool, model_catalog
+from .embedding import Embeddings
+from .retrieval import shortlist, graph_pool
 from .maintenance import append_update, save_fragment, ensure_baseline, merge_events, split_event, audit
 from .schemas import ChatInput, ContextInput, ConversationInput, EventInput, MaintenanceInput, MaintenancePlan, MemoryConfig, MessageInput, ModelInput, PersonInput, ReinforceInput, SpaceInput, DEFAULT_MAINTENANCE_PROMPT, MergeInput, SplitInput, RecallFeedback, EvaluationInput
 from .seed import create_space, seed_demo
@@ -39,6 +41,8 @@ class MemoryService:
         self.store = Store(data_dir)
         self.model = model or RemoteModelAdapter()
         self.metrics = Monitoring(self.store)
+        self.embeddings = Embeddings(self.store, self.metrics)
+        self.metrics.embedding_provider = lambda: [dict(space_id=space["id"], name=space["name"], **{k:v for k,v in self.embeddings.status(space["id"]).items() if k in ("enabled", "indexed_chunks", "pending_chunks", "last_error", "circuit_open", "retry_after_seconds")}) for space in self.store.list("space")]
         self.api_keys, self.maintenance_locks, self.chat_locks = {}, {}, {}
         self.background_tasks = set()
         self.scheduler_task = None
@@ -47,7 +51,7 @@ class MemoryService:
             seed_demo(self.store)
         for config in self.store.list("config"):
             changed = False
-            if config.get("default_retrieval_mode") in ("auto", "hybrid"):
+            if config.get("default_retrieval_mode") in ("auto", "llm"):
                 config["default_retrieval_mode"] = "local"
                 changed = True
             if hashlib.sha256(config.get("maintenance_prompt", "").encode()).hexdigest() == "492e225fe123f727e1077310b68495765080c4f35b0862fe2a98d945bf27a8e2":
@@ -73,6 +77,7 @@ class MemoryService:
             self.store.put("job", job, job["space_id"])
             self.spawn(self.maintain_job(job["space_id"], job["id"], MaintenanceInput.model_validate(job.get("request", {}))))
         self.scheduler_task = asyncio.create_task(self.scheduler())
+        self.embeddings.start()
 
     async def close(self):
         self._closed = True
@@ -85,6 +90,7 @@ class MemoryService:
         self.background_tasks.clear()
         self.scheduler_task = None
         self.api_keys.clear()
+        await self.embeddings.close()
         # Store opens short-lived connections; there is no persistent connection.
 
     def spawn(self, coro):
@@ -187,31 +193,39 @@ class MemoryService:
         started, strategy, measured_mode = time.perf_counter(), "hybrid_local", "local"
         try:
             config = self.config_for(sid)
-            requested = body.retrieval_mode or ("llm" if body.use_model else "local" if body.use_model is False else config["default_retrieval_mode"])
+            requested = body.retrieval_mode or ("local" if body.use_model is False else config["default_retrieval_mode"])
+            requested = "local" if requested == "auto" else requested
             measured_mode = requested
-            strategy = "hybrid_llm" if requested == "llm" else "hybrid_local"
+            strategy = "hybrid_embedding" if requested == "hybrid" else "hybrid_local"
             for pid in set(body.mention_ids + ([body.person_id] if body.person_id else []) + ([body.reply_to_person_id] if body.reply_to_person_id else [])):
                 self.store.get("person", pid, sid)
             config = dict(config, _interaction_ids=body.mention_ids + ([body.reply_to_person_id] if body.reply_to_person_id else []))
             at = dt(body.at or utcnow())
-            dialogue = "\n".join([m.get("content", "") for m in body.recent_messages[-6:]] + [body.query])
-            query = body.query if len(body.query.strip()) >= 8 else dialogue
+            dialogue = query_dialogue(body.query, body.current_context if body.current_context is not None else [m.get("content", "") for m in body.recent_messages])
             catalog = [e for e in self.store.event_catalog(sid) if not config["focus_person_id"] or config["focus_person_id"] in e["person_ids"]]
-            settings, key = self.model_for(sid)
-            use_model = requested == "llm"
-            if use_model and (settings["mode"] != "llm" or not settings.get("model")):
-                raise HTTPException(422, "请先配置聊天模型，再显式选择大模型联想")
             expanded, warnings = {}, []
-            route_status = {"llm": {"status": "not_requested", "candidate_count": 0}}
             timings, diagnostic = {}, {}
             retrieved_at = time.perf_counter()
-            if use_model:
-                if config["query_expansion_enabled"] and catalog:
-                    stage_at = time.perf_counter()
-                    expanded = await expand_query(settings, key, dialogue, self.metrics, completion=self.model.complete)
-                    timings["query_expansion"] = round((time.perf_counter() - stage_at) * 1000, 3)
-            ids, routes = shortlist(self.store, sid, catalog, dialogue, body.person_id, at, config, expanded,
-                                    diagnostics=diagnostic, explore=use_model)
+            embedding_task = asyncio.create_task(self.embeddings.query(sid, dialogue, self.store.get_events(sid,[e["id"] for e in catalog]))) if requested == "hybrid" else None
+            try:
+                if embedding_task:
+                    await asyncio.sleep(0)
+                ids, routes = shortlist(self.store, sid, catalog, dialogue, body.person_id, at, config, diagnostics=diagnostic, explore=False)
+                semantic, embedding_status = await embedding_task if embedding_task else ({}, {"status":"not_requested", "candidate_count":0,"elapsed_ms":0})
+            finally:
+                if embedding_task and not embedding_task.done():
+                    embedding_task.cancel()
+                    await asyncio.gather(embedding_task, return_exceptions=True)
+            route_status = {"embedding": embedding_status}
+            for eid in sorted(semantic, key=semantic.get, reverse=True)[:config["retrieval_limit"]]:
+                if eid not in ids: ids.append(eid)
+                routes.setdefault(eid, []).append("embedding")
+            if requested == "hybrid":
+                self.metrics.route_seconds.labels("embedding").observe(embedding_status["elapsed_ms"] / 1000)
+                if embedding_status["status"] not in ("ok", "partial"):
+                    warnings.append({"code":embedding_status["status"],"message":"远程向量不可用，已退回程序召回"})
+                elif embedding_status["status"] == "partial":
+                    warnings.append({"code":"index_partial","message":"向量索引未完成；未索引事件仍参与程序检索"})
             lanes = diagnostic["lanes"]
             for name, members in (("lexical", set(lanes.get("full_text", []) + lanes.get("anchors", []) + lanes.get("context_anchors", []))),
                                   ("person_salience", set(lanes.get("person_salience", []))), ("temporal", set(lanes.get("temporal", [])))):
@@ -219,15 +233,8 @@ class MemoryService:
                 route_status[name] = {"status": "ok" if config["retrieval_routes"][name] else "disabled", "candidate_count": len(members), "elapsed_ms": round(seconds * 1000, 3)}
                 self.metrics.route_seconds.labels(name).observe(seconds)
             candidates = {e["id"]: e for e in self.store.get_events(sid, ids)}
-            ordered = [candidates[eid] for eid in ids if eid in candidates]
             matches, catalog_omitted = {}, []
-            if use_model and ordered:
-                stage_at = time.perf_counter()
-                snippets, catalog_omitted = model_catalog(ordered, dialogue + " " + json.dumps(expanded, ensure_ascii=False), config["model_catalog_char_budget"])
-                matches = await association_matches(settings, key, ordered, dialogue, body.person_id, at, metrics=self.metrics, catalog=snippets, completion=self.model.complete) if snippets else {}
-                timings["llm_association"] = round((time.perf_counter() - stage_at) * 1000, 3)
-                route_status["llm"] = {"status": "ok", "candidate_count": len(matches), "elapsed_ms": timings["llm_association"]}
-                self.metrics.route_seconds.labels("llm").observe(time.perf_counter() - stage_at)
+            matches = {eid: {"score": score, "reason": "Embedding similarity"} for eid, score in semantic.items() if eid in candidates}
             timings["candidate_retrieval"] = round((time.perf_counter() - retrieved_at) * 1000, 3)
             graph_at = time.perf_counter()
             current_catalog = [e for e in self.store.event_catalog(sid) if not config["focus_person_id"] or config["focus_person_id"] in e["person_ids"]]
@@ -237,13 +244,14 @@ class MemoryService:
             pool_ms = (time.perf_counter() - graph_at) * 1000
             engine_config = dict(config, max_seeds=body.top_k) if search_only else config
             result = build_context(events, body.person_id, dialogue, at, engine_config, body.mode, matches, entry_ids=set(ids),
-                                   rank_scores=diagnostic["fusion_scores"], search_only=search_only)
+                                   rank_scores=diagnostic["fusion_scores"], search_only=search_only, current_context=body.current_context)
             result["query"] = body.query
             result["person_context"] = {"enabled": bool(config["focus_person_id"]), "focus_person_id": config["focus_person_id"], "interaction_ids": config["_interaction_ids"]}
             result["engine_elapsed_ms"] = result["elapsed_ms"]
             timings.update(result.pop("timings_ms"))
             timings["graph_expansion"] = round(timings["graph_expansion"] + pool_ms, 3)
-            effective = "llm" if use_model else "local"
+            effective = "hybrid" if requested == "hybrid" and embedding_status["status"] in ("ok", "partial") else "local"
+            strategy = "hybrid_embedding" if effective == "hybrid" else "hybrid_local"
             measured_mode = effective
             result["strategy"] = strategy
             result.update(requested_mode=requested, effective_mode=effective, kind="search" if search_only else "context",
@@ -253,7 +261,7 @@ class MemoryService:
                     self.metrics.degradations.labels(warning["code"]).inc()
             result["retrieval"] = {"indexed_events": len(catalog), "candidate_ids": ids, "routes": routes,
                                    "expanded_cues": expanded, "catalog_omitted_ids": catalog_omitted,
-                                   "graph_omitted_count": graph_omitted, "association_evidence": matches}
+                                   "graph_omitted_count": graph_omitted, "semantic_matches": matches}
             for candidate in result["candidates"]:
                 candidate["retrieval_routes"] = routes.get(candidate["event_id"], ["graph"])
                 if body.trace:
@@ -269,7 +277,7 @@ class MemoryService:
             for name, status in route_status.items():
                 self.metrics.route_candidates.labels(name).observe(status["candidate_count"])
                 metric_seeds = set(result["seeds"])
-                route_members = set(matches) if name == "llm" else {eid for eid, names in routes.items() if name in names or (name == "lexical" and any(n in names for n in ("full_text", "anchors", "context_anchors")))}
+                route_members = set(matches) if name == "embedding" else {eid for eid, names in routes.items() if name in names or (name == "lexical" and any(n in names for n in ("full_text", "anchors", "context_anchors")))}
                 self.metrics.route_contributions.labels(name).observe(len(metric_seeds & route_members))
             result.update(space_id=sid, recorded_at=iso())
             if config["focus_person_id"]:
@@ -738,7 +746,7 @@ class MemoryService:
         return {"default_retrieval_mode": cfg["default_retrieval_mode"], "retrieval_modes": {
             "auto": {"available": True, "reason": "兼容旧 auto 配置，使用程序多路召回"},
             "local": {"available": True, "reason": "程序召回不需要模型连接"},
-            "llm": {"available": model_ready, "reason": "已配置模型连接，实际可用性以连接测试为准" if model_ready else "请先配置整理与聊天模型"}},
+            "hybrid": {"available": True, "reason": "Optional remote embeddings with local fallback"}},
             "maintenance": {"mode": "llm" if model_ready else "archive_only"},
             "chat": {"mode": "llm" if model_ready else "local_replay"}}
 

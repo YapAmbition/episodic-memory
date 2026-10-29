@@ -10,7 +10,7 @@ export function PluginConfiguration({config}: {config: Config}) {
     <div className="plugin-notice">请到 AstrBot → 插件 → 记忆切片 → 配置修改，保存后重载插件。这里展示当前空间实际使用的参数；事件正文可以在「事件记忆」中编辑。</div>
     <div className="plugin-summary">
       <article><small>模型来源</small><strong>AstrBot 已配置的聊天模型</strong></article>
-      <article><small>召回方式</small><strong>{config.default_retrieval_mode === "llm" ? "大模型联想" : "程序多路召回"}</strong></article>
+      <article><small>召回方式</small><strong>{config.default_retrieval_mode === "hybrid" ? "语义增强召回" : "程序多路召回"}</strong></article>
       <article><small>自动整理</small><strong>{config.schedule_enabled ? `每 ${config.schedule_interval_minutes} 分钟` : "已暂停"}</strong></article>
       <article><small>基础半衰期</small><strong>{config.half_life_days} 天</strong></article>
       <article><small>上下文字符预算</small><strong>{config.context_char_budget.toLocaleString()}</strong></article>

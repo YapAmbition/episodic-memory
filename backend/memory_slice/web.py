@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from .monitoring import CONTENT_TYPE_LATEST
 from .web_middleware import MetricsMiddleware
 from .schemas import (
+    EmbeddingInput,
     ChatInput,
     ContextInput,
     ConversationInput,
@@ -69,6 +70,8 @@ def create_app(
     access_token=None,
     scope_info=None,
 ):
+    benchmark_tasks = set()
+    benchmark_jobs = {}
     owns_service = service is None
     if service is None:
         service = MemoryService(
@@ -87,15 +90,31 @@ def create_app(
         try:
             yield
         finally:
+            for task in benchmark_tasks:
+                task.cancel()
+            await asyncio.gather(*benchmark_tasks, return_exceptions=True)
             if owns_service:
                 await service.close()
 
     app = FastAPI(
         title="记忆切片 · Memory Slice API",
-        version="0.6.0",
+        version="0.7.0",
         description="以事件为核心的记忆服务。默认程序多路召回，可选显式大模型联想。分数为工程模型，不代表人类记忆概率。",
         lifespan=lifespan,
     )
+
+    # Configuration validation must not reflect submitted keys into UI errors.
+    from fastapi.exceptions import RequestValidationError
+    from fastapi.exception_handlers import request_validation_exception_handler
+
+    @app.exception_handler(RequestValidationError)
+    async def safe_configuration_errors(request: Request, exc: RequestValidationError):
+        if request.url.path.endswith(("/embedding", "/model")):
+            return JSONResponse(status_code=422, content={"detail": [
+                {key: error[key] for key in ("type", "loc", "msg") if key in error}
+                for error in exc.errors()
+            ]})
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(HTTPException)
     async def domain_error(request, exc):
@@ -146,7 +165,7 @@ def create_app(
             path = request.url.path.removeprefix("/api/v1")
             allowed = bool(
                 re.fullmatch(
-                    r"/spaces/[^/]+/(?:events(?:/[^/]+(?:/(?:split|reinforce))?)?|context|search|maintenance|jobs/[^/]+/retry|recalls/[^/]+/feedback)",
+                    r"/spaces/[^/]+/(?:events(?:/[^/]+(?:/(?:split|reinforce))?)?|context|search|benchmarks|maintenance|jobs/[^/]+/retry|recalls/[^/]+/feedback)",
                     path,
                 )
             )
@@ -190,13 +209,69 @@ def create_app(
             metrics.prometheus(), headers={"Content-Type": CONTENT_TYPE_LATEST}
         )
 
+    @api.get("/benchmarks", tags=["Evaluation"])
+    def benchmark_list():
+        return list(benchmark_jobs.values())
+
+    @api.post("/spaces/{sid}/benchmarks", tags=["Evaluation"])
+    async def start_benchmark(sid: str, mode: str = "local"):
+        import tempfile
+        from types import SimpleNamespace
+        from .benchmark import run
+        from .store import new_id, iso
+        service.config_for(sid)
+        if mode not in ("local", "both"):
+            raise HTTPException(422, "请选择 local 或 both")
+        if benchmark_tasks:
+            raise HTTPException(409, "已有测试正在运行，请等待完成")
+        embedding_config = None
+        if mode == "both":
+            embedding_config = service.embeddings.settings(sid)
+            if not embedding_config["enabled"] or not embedding_config["base_url"] or not embedding_config["model"]:
+                raise HTTPException(422, "请先在当前空间配置并启用 Embedding")
+            embedding_config["api_key"] = service.embeddings.keys.get(sid) or os.environ.get("EMBEDDING_API_KEY")
+        jid = new_id("benchmark")
+        job = dict(id=jid, space_id=sid, mode=mode, status="running", phase="preparing", completed=0,
+                   total=28*(2 if mode == "both" else 1), created_at=iso(), report=None, error=None)
+        benchmark_jobs[jid] = job
+        while len(benchmark_jobs) > 20:
+            del benchmark_jobs[next(iter(benchmark_jobs))]
+
+        async def execute():
+            try:
+                with tempfile.TemporaryDirectory(prefix="memory-benchmark-report-") as directory:
+                    output = Path(directory) / "report.json"
+                    args = SimpleNamespace(mode=mode, k=5, timeout=1.5, compare=None, output=str(output))
+                    await run(args, embedding_config=embedding_config, progress=job.update, quiet=True)
+                    report = json.loads(output.read_text())
+                    # Only compare same dataset/config to a known baseline, never silently bless a new result.
+                    from .benchmark import dataset_directory
+                    baseline_file = dataset_directory() / "baselines/local-v1.json"
+                    baseline = json.loads(baseline_file.read_text()) if baseline_file.exists() else None
+                    compatible = baseline and all(baseline.get(k) == report.get(k) for k in ("dataset_sha256", "config", "k"))
+                    report["baseline"] = baseline["summaries"]["local"] if compatible else None
+                    previous = {r["id"]: r for r in baseline["results"]} if compatible else {}
+                    for row in report["results"]:
+                        old = previous.get(row["id"]) if row["mode"] == "local" else None
+                        row["regressed"] = bool(old and (set(old["hits"]) - set(row["hits"]) or row["reciprocal_rank"] < old["reciprocal_rank"] or (not old["selected"] and not row["expected"] and row["selected"]) or set(row["forbidden_hits"]) - set(old["forbidden_hits"])))
+                    job.update(status="completed", phase="completed", report=report)
+            except asyncio.CancelledError:
+                job.update(status="cancelled", error="服务关闭，测试已取消")
+                raise
+            except Exception as exc:
+                job.update(status="failed", error=f"测试未完成（{type(exc).__name__}）。请检查 Embedding 连接、密钥或稍后重试；日常记忆未改变。")
+        task = asyncio.create_task(execute())
+        benchmark_tasks.add(task)
+        task.add_done_callback(benchmark_tasks.discard)
+        return job
+
     @api.get("/monitoring", tags=["Monitoring"])
     def monitoring_json():
         return metrics.snapshot()
 
     @app.get("/api/health", tags=["Health"])
     def health():
-        return {"status": "ok", "version": "0.6.0"}
+        return {"status": "ok", "version": "0.7.0"}
 
     @api.get("/runtime", tags=["Configuration"])
     def runtime_info():
@@ -255,6 +330,26 @@ def create_app(
     @api.post("/spaces/{sid}/model/test", tags=["Configuration"])
     async def test_model(sid: str):
         return await service.test_model(sid)
+
+    @api.get("/spaces/{sid}/embedding", tags=["Configuration"])
+    async def embedding_status(sid: str):
+        service.config_for(sid)
+        return service.embeddings.status(sid)
+
+    @api.put("/spaces/{sid}/embedding", tags=["Configuration"])
+    async def embedding_config(sid: str, body: EmbeddingInput):
+        service.config_for(sid)
+        return service.embeddings.configure(sid, body)
+
+    @api.post("/spaces/{sid}/embedding/test", tags=["Configuration"])
+    async def embedding_test(sid: str):
+        service.config_for(sid)
+        from .embedding import Unavailable
+        try:
+            await service.embeddings.request(sid, ["connection test"], "test")
+            return {"ok": True}
+        except Unavailable as exc:
+            return {"ok": False, "reason": str(exc)}
 
     @api.get("/spaces/{sid}/capabilities", tags=["Configuration"])
     def capabilities(sid: str):

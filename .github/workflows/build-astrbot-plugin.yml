@@ -1,0 +1,58 @@
+name: Build AstrBot Plugin ZIP
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: python -m pip install -r plugins/astrbot_plugin_memory_slice/requirements.txt
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci --no-audit --no-fund
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+      - name: Build installable ZIP
+        run: python scripts/build_astrbot_plugin.py
+      - name: Test plugin and packaged core
+        run: python -m unittest discover -s plugins/tests -v
+      - name: Test backend
+        env:
+          PYTHONPATH: backend
+          MEMORY_DATA_DIR: ${{ runner.temp }}/memory-slice-tests
+          SEED_DEMO: 'false'
+        run: python -m unittest discover -s backend/tests -q
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-slice-astrbot-${{ github.run_number }}
+          path: dist/astrbot_plugin_memory_slice-*.zip
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Download instructions
+        run: |
+          cat >> "$GITHUB_STEP_SUMMARY" <<'SUMMARY'
+          ## 安装包已生成
+          在本次运行页面的 **Artifacts** 下载 `memory-slice-astrbot-*`。
+          GitHub 会额外包一层 ZIP：解压下载文件，取出里面的
+          `astrbot_plugin_memory_slice-v*.zip`，在 AstrBot 选择「从文件安装」。
+          不要上传外层 Artifact ZIP，也不要上传 GitHub 的源码 ZIP。
+          SUMMARY

@@ -4,7 +4,7 @@
 }
 .retrieval-mode-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin: 5px 0 24px;
 }
@@ -329,4 +329,17 @@
   .retrieval-mode-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.embedding-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 18px;
+  margin: 22px 0;
+}
+.embedding-fields .field-label { margin: 0; }
+.embedding-fields input { width: 100%; box-sizing: border-box; }
+@media (max-width: 640px) {
+  .embedding-fields { grid-template-columns: 1fr; }
+  .retrieval-actions { flex-wrap: wrap; gap: 12px; }
 }

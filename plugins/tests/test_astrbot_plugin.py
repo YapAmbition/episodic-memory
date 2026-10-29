@@ -7,6 +7,7 @@ import time
 import types
 import unittest
 import zipfile
+import httpx
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -159,6 +160,33 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
             self.runtime.core.config_for(record["space_id"])["focus_person_id"]
         )
 
+    async def test_hybrid_provider_failure_still_injects_local_memory(self):
+        await self.reset(retrieval_mode="hybrid", embedding_enabled=True,
+                         embedding_base_url="https://embedding.invalid/v1",
+                         embedding_model="test", embedding_api_key="private-key",
+                         embedding_timeout_seconds=.1)
+        manager = self.runtime.core.embeddings
+        manager.transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"data":[{"index":i,"embedding":[1,0]} for i,_ in enumerate(json.loads(r.content)["input"])]}))
+        event = Event()
+        record = await self.runtime.ingest(event)
+        job = await self.finished(await self.runtime.maintain(event), record["space_id"])
+        self.assertEqual(job["status"], "completed")
+        await manager.index_once(record["space_id"])
+        manager.transport = httpx.MockTransport(lambda r: httpx.Response(401, text="private-key"))
+        text = await self.runtime.recall(Event("陨石一号怎么样了", mid="2"))
+        self.assertIn("陨石一号", text)
+        self.assertEqual(len(self.host.calls), 1)
+        self.assertNotIn("private-key", await self.runtime.status(Event(mid="3")))
+        await self.runtime.response(event,"下次再试试")
+        rows = self.runtime.core.messages(record["space_id"],record["conversation_id"])
+        self.assertTrue(any(r["role"] == "assistant" for r in rows))
+
+    async def test_legacy_llm_option_becomes_local(self):
+        await self.reset(retrieval_mode="llm")
+        record = await self.runtime.ingest(Event())
+        self.assertEqual(self.runtime.config["retrieval_mode"], "local")
+        self.assertEqual(self.runtime.core.config_for(record["space_id"])["default_retrieval_mode"], "local")
+
     async def test_duplicate_message_and_sent_reply_are_idempotent(self):
         first = Event()
         a = await self.runtime.ingest(first)
@@ -251,7 +279,7 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
                 self.host, {"memory_options": '{"focus_person_id":"x"}'}, self.tmp.name
             )
         with self.assertRaises(ValueError):
-            Runtime(self.host, {"retrieval_mode": "hybrid"}, self.tmp.name)
+            Runtime(self.host, {"retrieval_mode": "unsupported"}, self.tmp.name)
 
     async def test_unrelated_group_chat_is_not_archived(self):
         await self.reset(focus_uid="42")
@@ -364,7 +392,7 @@ def host_modules(data_dir):
         on_llm_response=decorator,
         after_message_sent=decorator,
         permission_type=decorator,
-        command=decorator,
+        command=lambda name: lambda f: (setattr(f, "registered_command", name) or f),
         EventMessageType=types.SimpleNamespace(ALL="all"),
         PermissionType=types.SimpleNamespace(ADMIN="admin"),
     )
@@ -425,6 +453,30 @@ class HookTests(unittest.IsolatedAsyncioTestCase):
             binding["space_id"], binding["conversation_id"]
         )
         self.assertEqual(rows[0]["content"], event.message_str)
+
+    async def test_context_forwarding_and_core_dedup_across_long_history(self):
+        event = Event()
+        await self.plugin.capture(event)
+        binding = event.get_extra("memory_slice_record")
+        self.plugin.runtime.core.create_event(binding["space_id"], EventInput(
+            title="陨石一号", body="陨石一号面包失败", salience=1,
+            anchors={"details": ["陨石一号"]}))
+        req = types.SimpleNamespace(extra_user_content_parts=[], prompt=event.message_str,
+                                    system_prompt="人设", contexts=[])
+        await self.plugin.inject(event, req)
+        memory = req.extra_user_content_parts[0].text
+        req.contexts = [{"role": "user", "content": memory}] + [
+            {"role": "assistant", "content": "继续聊陨石一号"} for _ in range(35)]
+        req.extra_user_content_parts = []
+        await self.plugin.inject(event, req)
+        self.assertEqual(req.extra_user_content_parts, [])
+        self.assertEqual(len(req.contexts), 36)
+
+    async def test_command_and_recall_choices(self):
+        self.assertEqual(self.plugin.status.registered_command, "记忆切片")
+        schema = json.loads((ROOT / "plugins/astrbot_plugin_memory_slice/_conf_schema.json").read_text())
+        self.assertEqual(schema["retrieval_mode"]["options"], ["local", "hybrid"])
+        self.assertIn("延迟", schema["retrieval_mode"]["description"])
 
     async def test_reply_saved_only_after_send(self):
         event = Event()
@@ -503,7 +555,7 @@ class PackagingTests(unittest.TestCase):
             for name, sha in manifest.items():
                 self.assertEqual(hashlib.sha256(z.read(prefix + name)).hexdigest(), sha)
                 self.assertEqual(
-                    z.read(prefix + name), (ROOT / "backend" / name).read_bytes()
+                    z.read(prefix + name), ((ROOT / "evals/recall" / name.removeprefix("memory_slice/benchmark_data/")) if name.startswith("memory_slice/benchmark_data/") else (ROOT / "backend" / name)).read_bytes()
                 )
             self.assertIn(prefix + "main.py", z.namelist())
             self.assertFalse(

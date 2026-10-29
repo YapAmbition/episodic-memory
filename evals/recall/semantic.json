@@ -1,0 +1,93 @@
+{
+  "name": "semantic",
+  "cases": [
+    {
+      "id": "semantic-01",
+      "query": "为什么换了代码还是打出以前的包？",
+      "expected": [
+        "branch"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "semantic-02",
+      "query": "它不是忘了，而是不同地方聊过的内容不互通吗？",
+      "expected": [
+        "scope"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "semantic-03",
+      "query": "我找遍屋子，东西却一直在身上，是哪次？",
+      "expected": [
+        "glasses"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "semantic-04",
+      "query": "那次忙活半天，其实机器根本没通上电？",
+      "expected": [
+        "power"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "semantic-05",
+      "query": "用别人做好的安装包也得准备编译工具？",
+      "expected": [
+        "build"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "semantic-06",
+      "query": "最后给这个产品起了什么中英文名字？",
+      "expected": [
+        "name"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "semantic-07",
+      "query": "每次更新后就会自己生成下载页面吗？",
+      "expected": [
+        "release"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    },
+    {
+      "id": "semantic-08",
+      "query": "当初测出来找回一次要多久？",
+      "expected": [
+        "latency"
+      ],
+      "forbidden": [
+        "future",
+        "archived"
+      ]
+    }
+  ]
+}
