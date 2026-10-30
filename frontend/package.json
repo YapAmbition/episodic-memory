@@ -10,11 +10,12 @@
     "test": "tsc --target ES2022 --module ES2022 --skipLibCheck --outDir .test-build src/monitoringMetrics.ts src/retrievalUi.ts src/maintenanceUi.ts src/types.ts && node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "lucide-react": "^0.468.0",
     "react": "^19.1.1",
-    "react-dom": "^19.1.1",
-    "lucide-react": "^0.468.0"
+    "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@types/node": "^22.20.5",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@vitejs/plugin-react": "^5.0.3",

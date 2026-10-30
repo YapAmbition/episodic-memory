@@ -42,10 +42,10 @@ def build(output, build_frontend=True):
             raise RuntimeError(
                 "打包前端需要 Node.js 与 npm；安装插件的用户无需安装它们"
             )
-        if not (frontend / "node_modules").is_dir():
-            subprocess.run(
-                [npm, "ci", "--no-audit", "--no-fund"], cwd=frontend, check=True
-            )
+        # Refresh from the lockfile even after a source update with existing node_modules.
+        subprocess.run(
+            [npm, "ci", "--no-audit", "--no-fund"], cwd=frontend, check=True
+        )
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
         stamp.write_text(json.dumps(frontend_sources(), sort_keys=True))
     if not stamp.is_file() or json.loads(stamp.read_text()) != frontend_sources():

@@ -32,8 +32,8 @@ def build(output, version='0.2.6', build_frontend=True):
         npm = shutil.which('npm')
         if not npm:
             raise RuntimeError('开发者构建需要 Node.js/npm，安装用户不需要')
-        if not (frontend/'node_modules').exists():
-            subprocess.run([npm, 'ci', '--no-audit', '--no-fund'], cwd=frontend, check=True)
+        # Refresh from the lockfile even after a source update with existing node_modules.
+        subprocess.run([npm, 'ci', '--no-audit', '--no-fund'], cwd=frontend, check=True)
         subprocess.run([npm, 'run', 'build'], cwd=frontend, check=True)
         stamp.write_text(json.dumps(frontend_sources(), sort_keys=True))
     if not stamp.exists() or json.loads(stamp.read_text()) != frontend_sources():
