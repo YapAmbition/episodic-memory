@@ -111,6 +111,7 @@ async def run(args, *, embedding_config=None, progress=None, quiet=False):
             regressions = []
             if args.compare:
                 old = json.loads(Path(args.compare).read_text())
+                old['config'].setdefault('maintenance_pending_token_limit', 4000)
                 if old['dataset_sha256'] != fingerprint or old['k'] != args.k or old['config'] != config or old.get('embedding') != embedding:
                     raise ValueError('baseline dataset/k/config/embedding differs; comparisons would be misleading')
                 previous = {(r['mode'],r['id']):r for r in old['results']}

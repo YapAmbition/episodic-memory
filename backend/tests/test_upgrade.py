@@ -248,11 +248,11 @@ class RuntimeTests(unittest.TestCase):
             with TestClient(create_app(directory,seed=False)) as client:
                 for _ in range(100):
                     result=client.get('/api/v1/spaces/'+sid+'/jobs/'+jid).json()
-                    if result['status']=='completed':
+                    if result['status']=='deferred':
                         break
                     time.sleep(.01)
-                self.assertEqual(result['status'],'completed',result)
-                self.assertEqual(result['message_count'],1)
+                self.assertEqual(result['status'],'deferred',result)
+                self.assertEqual(client.get('/api/v1/spaces/'+sid+'/stats').json()['pending_messages'],1)
 
     def test_transient_model_error_retries_and_reports_attempts(self):
         from memory_slice.monitoring import Monitoring

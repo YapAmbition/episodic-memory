@@ -55,7 +55,7 @@ class Runtime:
             mode="llm",
             model="astrbot-host",
             timeout_seconds=config.get("model_timeout_seconds", 60),
-            maintenance_output_tokens=config.get("output_tokens", 4096),
+            maintenance_output_tokens=config.get("output_tokens", 8192),
             context_window_tokens=config.get("context_window_tokens") or None,
             max_retries=0,
         ).model_dump(exclude={"api_key"})

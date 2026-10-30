@@ -31,7 +31,7 @@
 | interval_minutes | 60 | 整理间隔，1–10080 分钟 |
 | model_timeout_seconds | 60 | 单次记忆模型调用超时 |
 | context_window_tokens | 0 | 模型上下文容量；0 为未知，使用保守输入预算 |
-| output_tokens | 4096 | 整理输出预留 |
+| output_tokens | 8192 | 整理输出预留 |
 | ignore_prefixes | / 等 | 忽略指令消息；本插件管理指令始终忽略 |
 | memory_options | {} | 核心高级参数 JSON |
 

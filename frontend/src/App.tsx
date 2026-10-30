@@ -1,8 +1,10 @@
+import { maintenanceStatusLabel } from "./maintenanceUi";
+import { CodexSyncPanel } from "./CodexSyncPanel";
 import { RecallBenchmark } from "./RecallBenchmark";
 import { EmbeddingSettings } from "./EmbeddingSettings";
 import { PluginConsole, PluginConfiguration } from "./PluginConsole";
 import { MaintenanceDetails } from "./MaintenanceDetails";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   Activity,
   ArrowDownToLine,
@@ -91,14 +93,7 @@ const statusLabel: Record<string, string> = {
   dormant: "沉睡",
   future: "尚未得知",
 };
-const jobLabel: Record<string, string> = {
-  deferred: "材料不足，部分暂缓",
-  queued: "排队中",
-  running: "正在整理",
-  completed: "已完成",
-  failed: "失败",
-  skipped: "已跳过",
-};
+
 
 function Logo() {
   return (
@@ -174,7 +169,8 @@ export default function App() {
   const [retrievalMode, setRetrievalMode] = useState<RetrievalMode | "default">(
     "default",
   );
-  const bottom = useRef<HTMLDivElement>(null),
+  const chatScroll = useRef<HTMLDivElement>(null),
+    followMessages = useRef(true),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null),
     recallSeq = useRef(0),
     recallController = useRef<AbortController | null>(null),
@@ -310,6 +306,7 @@ export default function App() {
     api<Message[]>(`${base}/conversations/${cid}/messages`)
       .then((m) => {
         if (!cancelled) {
+          followMessages.current = true;
           setMessages(m);
           setQuery(
             [...m].reverse().find((x) => x.role === "user")?.content || "",
@@ -332,7 +329,29 @@ export default function App() {
     };
   }, [cid, sid]);
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    if (!sid || managed) return;
+    let active = true, pending = false;
+    const load = async () => {
+      if (pending || document.hidden || busy) return;
+      pending = true;
+      try {
+        const rows = await api<Conversation[]>(`${base}/conversations`);
+        const latest = cid ? await api<Message[]>(`${base}/conversations/${cid}/messages`) : [];
+        if (active) {
+          setConversations(rows);
+          if (cid) setMessages((previous) =>
+            JSON.stringify(previous) === JSON.stringify(latest) ? previous : latest,
+          );
+        }
+      } catch (e) { if (active) fail(e); }
+      finally { pending = false; }
+    };
+    const timer = setInterval(load, 5000);
+    return () => { active = false; clearInterval(timer); };
+  }, [sid, cid, managed, base, busy, fail]);
+  useLayoutEffect(() => {
+    const panel = chatScroll.current;
+    if (panel && followMessages.current) panel.scrollTop = panel.scrollHeight;
   }, [messages, busy]);
   const doRecall = useCallback(
     async (text: string) => {
@@ -421,6 +440,7 @@ export default function App() {
   }
   async function send(text = draft) {
     if (!text.trim() || busy) return;
+    followMessages.current = true;
     setBusy(true);
     recallController.current?.abort();
     recallSeq.current += 1;
@@ -499,7 +519,7 @@ export default function App() {
       });
       setShowJobs(true);
       await refresh();
-      notify("整理任务已提交");
+      notify("当前会话的整理任务已提交");
     } catch (e) {
       fail(e);
     }
@@ -720,7 +740,7 @@ export default function App() {
                   <button
                     className="button secondary"
                     onClick={maintain}
-                    disabled={jobs.some((j) =>
+                    disabled={!cid || jobs.some((j) =>
                       ["queued", "running"].includes(j.status),
                     )}
                   >
@@ -730,10 +750,10 @@ export default function App() {
                         jobs.some((j) => j.status === "running") ? "spin" : ""
                       }
                     />
-                    整理记忆
-                    {(stats?.pending_messages ?? 0) > 0 && (
+                    整理当前会话
+                    {messages.some(m => m.processed === false) && (
                       <span className="count-badge">
-                        {stats?.pending_messages}
+                        {messages.filter(m => m.processed === false).length}
                       </span>
                     )}
                   </button>
@@ -785,6 +805,7 @@ export default function App() {
                     </div>
                   ))}
                 </div>
+                {hostMode === "agent" && <CodexSyncPanel spaceId={sid} />}
                 <div className="experiment-toolbar">
                   <div className="toolbar-group">
                     <UserRound size={15} />
@@ -867,6 +888,13 @@ export default function App() {
                       : "历史会话只读取已有结果；点击重新唤起才会检索"}
                   </span>
                 </div>
+                <div className="experiment-toolbar">
+                  <label>聊天会话 <select aria-label="选择聊天会话" value={cid} disabled={busy} onChange={e=>{const c=conversations.find(x=>x.id===e.target.value);setCid(e.target.value);if(c?.person_id)setPid(c.person_id);setTrace(null);setQuery("");}}>
+                    <option value="">选择会话</option>
+                    {conversations.map(c=><option key={c.id} value={c.id}>{c.display_title || c.title} · {new Date(c.created_at).toLocaleString()}</option>)}
+                  </select></label>
+                  <span>显示当前会话的 {messages.length} 条消息 · 每 5 秒刷新</span>
+                </div>
                 <div className="lab-grid">
                   <section className="panel chat-panel">
                     <div className="panel-header">
@@ -894,7 +922,14 @@ export default function App() {
                         新对话
                       </button>
                     </div>
-                    <div className="chat-scroll">
+                    <div
+                      className="chat-scroll"
+                      ref={chatScroll}
+                      onScroll={(event) => {
+                        const panel = event.currentTarget;
+                        followMessages.current = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 80;
+                      }}
+                    >
                       <div className="chat-date">
                         <span /> {day(getTime())} · 记忆实验 <span />
                       </div>
@@ -961,8 +996,7 @@ export default function App() {
                           正在连接对话与记忆
                         </div>
                       )}
-                      <div ref={bottom} />
-                    </div>
+                      </div>
                     <div className="chat-composer">
                       <div className="prompt-chips">
                         {[
@@ -1489,7 +1523,7 @@ export default function App() {
                   <span className={`job-dot ${j.status}`} />
                   <div>
                     <strong>
-                      {jobLabel[j.status]}
+                      {maintenanceStatusLabel(j)}
                     </strong>
                     <p>
                       {j.error ||

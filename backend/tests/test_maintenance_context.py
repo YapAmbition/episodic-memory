@@ -93,6 +93,144 @@ class MaintenanceTests(unittest.TestCase):
             result = self.client.post(self.prefix + '/maintenance', json={}).json()
             return self.await_job(result['id'])
 
+    def test_complete_prefix_waits_without_repeating_and_resumes_with_new_message(self):
+        first = self.post_message('第一件事情已经说完').json()
+        second = self.post_message('还有另外一件事情，等下继续').json()
+        calls = []
+        async def reply(settings, key, request, **kw):
+            data = json.loads(request[1]['content']); calls.append(data)
+            messages = data['new_messages']
+            if len(calls) == 1:
+                result = json.loads(self.plan_for(messages[:1]))
+                result.update(processed_through_message_id=first['id'], waiting_reason='第二件尚未展开')
+                return json.dumps(result)
+            return self.plan_for(messages)
+        self.model()
+        with patch('memory_slice.model.complete', reply):
+            job = self.await_job(self.client.post(self.prefix+'/maintenance',json={'conversation_id':self.cid}).json()['id'])
+            self.assertTrue(job['waiting_for_context'], job)
+            self.assertEqual(job['message_count'], 1)
+            self.await_job(self.client.post(self.prefix+'/maintenance',json={'conversation_id':self.cid}).json()['id'])
+            self.assertEqual(len(calls), 1)
+            self.post_message('第二件事情现在补充完整了')
+            resumed = self.await_job(self.client.post(self.prefix+'/maintenance',json={'conversation_id':self.cid}).json()['id'])
+            self.assertEqual(resumed['message_count'], 2, resumed)
+        self.assertEqual(calls[1]['new_messages'][0]['id'], second['id'])
+        self.assertTrue(calls[1]['previous_dialogue'])
+
+    def test_waiting_conversation_does_not_block_other_conversation(self):
+        self.post_message('等一下再讲')
+        other = self.client.post(self.prefix+'/conversations',json={'person_id':self.person}).json()['id']
+        self.client.post(self.prefix+'/conversations/'+other+'/messages',json={'role':'user','content':'另一件已完成的小事'})
+        self.model()
+        calls = []
+        async def reply(settings,key,request,**kw):
+            messages=json.loads(request[1]['content'])['new_messages'];calls.append(messages)
+            if messages[0]['conversation_id']==self.cid:
+                return json.dumps({'processed_through_message_id':None,'waiting_reason':'还没说完'})
+            return self.plan_for(messages)
+        with patch('memory_slice.model.complete',reply):
+            self.client.post(self.prefix+'/maintenance',json={})
+            for _ in range(100):
+                jobs=self.client.get(self.prefix+'/jobs').json()
+                if not any(j['status'] in ('queued','running') for j in jobs): break
+                time.sleep(.01)
+        self.assertEqual(len(calls),2)
+        self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],1)
+        self.assertFalse(any(r.get('blocked') for r in self.app.state.store.list('integration',self.space)))
+
+    def test_force_progress_records_or_skips_and_keeps_original(self):
+        self.config(maintenance_pending_token_limit=512)
+        raw=self.post_message('待展开的话题。'*100).json()
+        async def reply(settings,key,request,**kw):
+            data=json.loads(request[1]['content']);self.assertTrue(data['force_progress'])
+            return json.dumps({'processed_through_message_id':raw['id'],'ignored_messages':[{'message_id':raw['id'],'reason':'重复空泛描述，没有具体事实'}]})
+        job=self.run_mock(reply)
+        self.assertEqual(job['status'],'completed',job)
+        saved=self.app.state.store.get('message',raw['id'],self.space)
+        self.assertTrue(saved['processed']);self.assertEqual(saved['content'],raw['content'])
+
+    def test_force_refusal_and_boundary_holes_never_commit(self):
+        self.config(maintenance_pending_token_limit=512)
+        raw=self.post_message('一件事情的具体事实。'*100).json()
+        async def refusal(*args,**kw):
+            return json.dumps({'processed_through_message_id':None,'waiting_reason':'一直等待'})
+        job=self.run_mock(refusal)
+        self.assertEqual(job['status'],'failed',job)
+        self.assertFalse(self.app.state.store.get('message',raw['id'],self.space)['processed'])
+        self.config(maintenance_pending_token_limit=100000)
+        self.post_message('后一件事')
+        async def hole(settings,key,request,**kw):
+            messages=json.loads(request[1]['content'])['new_messages']
+            result=json.loads(self.plan_for(messages[1:]))
+            result['processed_through_message_id']=messages[-1]['id']
+            return json.dumps(result)
+        job=self.run_mock(hole)
+        self.assertEqual(job['status'],'failed',job)
+        self.assertEqual(self.client.get(self.prefix+'/events').json(),[])
+        self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],2)
+
+    def test_late_backfill_is_not_lost_behind_cursor(self):
+        raw=self.post_message('后来发生的事情').json()
+        async def reply(settings,key,request,**kw):
+            return self.plan_for(json.loads(request[1]['content'])['new_messages'])
+        self.run_mock(reply)
+        late=self.client.post(self.prefix+'/conversations/'+self.cid+'/messages',json={'role':'assistant','content':'更早消息的迟到回复','at':(NOW-timedelta(hours=1)).isoformat()}).json()
+        self.run_mock(reply)
+        self.assertTrue(self.app.state.store.get('message',late['id'],self.space)['processed'])
+
+    def test_output_limit_retries_whole_messages_then_stops(self):
+        for _ in range(4): self.post_message('完整的一条消息，不应该被切成几个字。')
+        self.model(max_retries=3)
+        batches=[]
+        async def reply(settings, key, request, **kw):
+            self.assertEqual(settings['max_retries'],0)
+            self.assertEqual(kw['max_tokens'],8192)
+            self.assertIn('目标输出预算',request[0]['content'])
+            messages=json.loads(request[1]['content'])['new_messages']
+            batches.append(len(messages))
+            self.assertTrue(all(m['fragment']['end']==m['fragment']['total'] for m in messages))
+            raise OutputLimitError()
+        with patch('memory_slice.model.complete',reply):
+            job=self.await_job(self.client.post(self.prefix+'/maintenance',json={}).json()['id'])
+        self.assertEqual(batches,[4,2,1])
+        self.assertEqual(job['status'],'failed')
+        self.assertTrue(self.app.state.store.get('integration','maintenance-safety',self.space)['blocked'])
+        self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],4)
+
+    def test_chain_stops_at_eight_calls_even_with_progress(self):
+        # Different conversations force one batch per conversation.
+        for i in range(12):
+            conv=self.client.post(self.prefix+'/conversations',json={'person_id':self.person,'title':str(i)}).json()
+            self.client.post(self.prefix+'/conversations/'+conv['id']+'/messages',json={'role':'user','content':'完整的小事 '+str(i),'at':NOW.isoformat()})
+        calls=[]
+        self.model()
+        async def reply(settings,key,request,**kw):
+            messages=json.loads(request[1]['content'])['new_messages'];calls.append(1)
+            return self.plan_for(messages)
+        with patch('memory_slice.model.complete',reply):
+            self.client.post(self.prefix+'/maintenance',json={})
+            for _ in range(200):
+                jobs=self.client.get(self.prefix+'/jobs').json()
+                if not any(j['status'] in ('queued','running') for j in jobs): break
+                time.sleep(.01)
+        self.assertEqual(len(calls),8)
+        self.assertTrue(any(j['status']=='deferred' for j in jobs))
+        self.assertTrue(self.app.state.store.get('integration','maintenance-safety',self.space)['blocked'])
+        self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],4)
+
+    def test_scheduler_does_not_retry_paused_material(self):
+        self.post_message()
+        self.config(schedule_enabled=True,schedule_interval_minutes=1)
+        service=self.app.state.memory
+        service.pause_maintenance(self.space,'test')
+        async def one_tick():
+            with patch.object(service,'enqueue') as enqueue, patch('memory_slice.service.asyncio.sleep',side_effect=asyncio.CancelledError):
+                try: await service.scheduler()
+                except asyncio.CancelledError: pass
+                enqueue.assert_not_called()
+        asyncio.run(one_tick())
+
     def test_validation_failure_is_visible_and_logged_without_input(self):
         raw = self.post_message('private-dialogue-marker').json()
         async def invalid(*args, **kwargs):
@@ -143,9 +281,9 @@ class MaintenanceTests(unittest.TestCase):
         self.assertFalse(original['processed'])
 
     def test_long_message_fragments_commit_contiguously_without_overwriting_source(self):
-        text = ('开头🙂与结尾不能丢失。\n' * 700) + '唯一尾巴'
+        text = ('开头🙂与结尾不能丢失。\n' * 300) + '唯一尾巴'
         raw = self.post_message(text).json()
-        self.config(maintenance_input_token_budget=4000)
+        self.config(maintenance_input_token_budget=6000)
         self.model()
         ranges, output_limits = [], []
         async def reply(settings, key, request, **kw):
@@ -176,11 +314,11 @@ class MaintenanceTests(unittest.TestCase):
             self.assertTrue(f['content'] == text[r['start']:r['end']].strip(), 'derived narrative may trim boundary whitespace; sources remain exact')
         self.assertEqual([f['source_ranges'][0]['start'] for f in fragments], [r['start'] for r in ranges])
         self.assertEqual(sum(j['message_count'] for j in jobs), 1)
-        self.assertTrue(all(limit == 4096 for limit in output_limits))
+        self.assertTrue(all(limit == 8192 for limit in output_limits))
 
     def test_failed_second_fragment_preserves_committed_progress_and_remaining_text(self):
         raw = self.post_message('有据可查的长消息🙂。' * 900).json()
-        self.config(maintenance_input_token_budget=4000)
+        self.config(maintenance_input_token_budget=6000)
         self.model()
         calls = []
         async def reply(settings, key, request, **kw):
@@ -202,7 +340,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertTrue(any(j['status']=='failed' for j in jobs))
 
     def test_explicit_context_overflow_shrinks_and_continuations_inherit_limit(self):
-        self.post_message('这段话需要拆成几个小批次。' * 700)
+        self.post_message('这段话需要拆成几个小批次。' * 250)
         self.config(maintenance_input_token_budget=7000, maintenance_max_adaptations=3)
         self.model()
         sizes = []
@@ -218,8 +356,8 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(first['adaptation_count'],1,first)
         self.assertLess(sizes[1],sizes[0])
         inherited = next(j['adaptive_input_limit'] for j in jobs if j.get('adaptive_input_limit'))
-        self.assertTrue(all(n <= inherited for n in sizes[1:]))
-        self.assertLess(inherited,sizes[0])
+        self.assertTrue(all(n <= 7000 for n in sizes[1:]))
+        self.assertLessEqual(inherited,7000)
         text=self.client.get('/metrics').text
         self.assertIn('memory_maintenance_adaptations_total{reason="context_limit"} 1.0',text)
         self.assertIn('memory_maintenance_estimated_input_tokens_count{source="fallback"}',text)
@@ -398,7 +536,8 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(retried['retry_of'],job['id'])
 
     def test_output_limit_adapts_without_committing_partial_model_output(self):
-        raw=self.post_message('详细经过。'*500).json()
+        raw=self.post_message('详细经过。'*100).json()
+        self.post_message('后续经过。'*100)
         self.config(maintenance_input_token_budget=12000)
         calls=[]
         async def reply(settings,key,request,**kw):

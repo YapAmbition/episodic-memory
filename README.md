@@ -27,6 +27,30 @@
 
 在 GitHub 仓库的 **Actions → Build AstrBot Plugin ZIP → Run workflow** 手动构建。成功后从该运行的 **Artifacts** 下载，解压外层 ZIP，再把里面的插件 ZIP 上传到 AstrBot。详见 [GitHub 构建说明](plugins/astrbot_plugin_memory_slice/README.md#在-github-上构建-zip)。
 
+## 通过 Skill 接入 Agent（本地试用版）
+
+提供轻量 [Memory Slice Skill](skills/memory-slice/SKILL.md)：服务包独立存放，安装脚本用本地 `cp` 复制、校验 SHA256、建立 Python 虚拟环境并启动服务。Codex 以后台增量同步记录正式对话、Hook 仅召回注入；Qoder、DeepSeek Harness 及其他 Agent 可以按需调用。相同 Agent 的所有会话共享一个空间，未知 Agent 共用通用空间。
+
+开发者在项目根目录构建（需要 Node/npm；安装者只需要 Python 3.11+）：
+
+```bash
+python3 scripts/build_skill_bundle.py
+```
+
+产物在 `dist/skill-local/`：一个服务 ZIP、一个 Skill ZIP，以及解压好的 `memory-slice/`。Skill 不含服务程序或你的数据。源目录没有 `release.json`，请使用生成的 Skill 目录进行安装。
+
+```bash
+# 本机试用；默认 8095，可使用 --port 修改
+python3 dist/skill-local/memory-slice/scripts/client.py setup --agent codex
+python3 dist/skill-local/memory-slice/scripts/client.py open --agent codex
+```
+
+将生成的 Skill 安装到宿主支持的 Skill 目录后，再运行该目录中的同一脚本；若服务 ZIP 不再与 Skill 平级，增加 `--package "/绝对路径/服务包.zip"`。**Hook 安装不等于启用**：Codex 用户需要在 `/hooks` 中审阅并信任定义。无法验证 Hook 能力时脚本明确返回按需模式，不会冒充自动接入成功。
+
+默认使用系统密钥库持久保存模型 Key；没有可用密钥库时可显式传 `--credentials session`，此时重启服务后要在页面重新填写 Key。首次配置模型后，在页面开启定时整理或手动整理。服务自动拉起、版本升级、数据位置、隔离测试和已知限制见 [Skill 安装说明](skills/memory-slice/references/setup.md)。
+
+这套安装器目前在 macOS 验证。Windows/Linux 的平台分支已实现，但尚未完成真实环境验收；Codex 宿主的信任与真实回合触发也需要用户安装后验收。
+
 ## 快速启动（本机开发）
 
 需要 Python 3.9+（推荐 3.12）和 Node.js 20.19+ 或 22.12+。在项目根目录运行：
@@ -240,3 +264,21 @@ compose.yaml       服务与持久化卷
 ```
 
 使用隔离临时数据库，默认不联网；28 个固定问题覆盖关键词、语义改写、关联、追问与无答案边界。输出逐题结果、Recall@5、Hit@5、误召回率及耗时，有逐题退步时返回非零退出码。数据范围、真实 Embedding 测试与指标定义见 [召回测试集说明](evals/recall/README.md)。
+
+Codex 同步从首次启用时刻开始，不自动导入此前历史；页面可检查同步状态、排除会话/项目和指定时间段补录。同步记录与模型整理互相独立。
+
+### 整理输出与防循环保护
+
+整理默认输出上限为 8192 token，提示词目标为上限的约 73%，留出 JSON 结构与估算余量。已有显式配置保持不变。输出超限按完整消息减批；单条仍超限则暂停，不切成几十字重试。输入超限单独缩批，后续逐步恢复输入预算。
+
+每轮整理最多 8 次模型调用（含续批、补读和重试），最多 8 批；整理调用关闭底层隐式网络重试。失败、未解决材料、达到上限或服务中断都会保留进度并暂停该空间的自动整理，定时器和重启不会自动反复重试；用户手动整理或重试才开启新一轮。任务详情展示累计调用次数；Prometheus 指标 `memory_maintenance_paused_spaces` 展示暂停空间数。
+
+### 按事件边界推进整理
+
+核心整理支持 `processed_through_message_id`（本批连续处理前缀的最后一个消息 ID，全部等待时为 null）及 `waiting_reason`。边界按会话消息顺序校验，不按 ID 大小比较；前缀中每条消息必须归入事件、强化或带原因的 `ignored_messages`。事件写入和消息处理进度在同一事务提交。旧模型输出未带边界时，仅兼容连续覆盖前缀，空结果仍视为失败。
+
+未完成尾部按会话保存等待状态；相同待处理材料和整理配置不会重复调用模型，新消息或配置变化后可以继续。其他会话独立推进。每批提供少量只读的前序已处理对话；已处理消息不重新计入本批来源。消息仍逐条标记，因此迟到补录不会被游标跳过。
+
+`maintenance_pending_token_limit` 默认 4000（UTF-8 估算 token，可在记忆设置修改）。达到此阈值，或输入预算无法容纳全部待处理消息时，核心要求处理本批全部消息：保存已知阶段性事实，或说明原因并跳过没有可理解信息的内容；不虚构结局，不物理删除聊天。模型未遵守、输出截断或请求失败时保留原文并安全暂停，原有每轮最多 8 次调用限制继续生效。
+
+任务接口新增 `waiting_for_context`、`waiting_reason`、`processed_through_message_id`、`force_progress`、`ignored_messages`。等待任务状态为 completed（本轮已结束，但尾部仍未处理），异常暂停仍为 deferred/failed。监控新增 `memory_maintenance_decisions_total{mode="normal|waiting|forced"}`，按成功提交的批次计数；前端展示等待、跳过原因和容量触发推进情况。

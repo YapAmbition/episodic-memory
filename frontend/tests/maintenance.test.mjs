@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { maintenanceSummary, maintenanceInputLimit, outcomeName } from "../.test-build/maintenanceUi.js";
+import { maintenanceSummary, maintenanceInputLimit, outcomeName, maintenanceStatusLabel } from "../.test-build/maintenanceUi.js";
 import { histogram, metric } from "../.test-build/monitoringMetrics.js";
 
 test("unknown model capacity keeps an explicit conservative input budget", () => {
@@ -20,4 +20,15 @@ test("estimated input metrics remain separate from actual provider token usage",
   const snapshot={metrics:[{samples:[{name:"memory_maintenance_estimated_input_tokens_count",labels:{source:"fallback"},value:2},{name:"memory_maintenance_estimated_input_tokens_sum",labels:{source:"fallback"},value:6000},{name:"memory_model_tokens_total",labels:{purpose:"maintenance",direction:"input"},value:1800}]}]};
   assert.equal(histogram(snapshot,"memory_maintenance_estimated_input_tokens").average,3000);
   assert.equal(metric(snapshot,"memory_model_tokens_total",{purpose:"maintenance",direction:"input"}),1800);
+});
+
+test("paused tasks distinguish budget exhaustion from missing material", () => {
+  assert.equal(maintenanceStatusLabel({status:"deferred",error:"本轮调用或批次数已达安全上限，进度已保存",deferred_messages:[]}),"已达本轮上限，整理暂停");
+  assert.equal(maintenanceStatusLabel({status:"deferred",deferred_messages:[{message_id:"m",reason:"缺少原文"}]}),"材料待补充，部分暂缓");
+  assert.equal(maintenanceStatusLabel({status:"deferred",error:"服务曾中断",deferred_messages:[]}),"整理已暂停");
+  assert.equal(maintenanceStatusLabel({status:"completed"}),"已完成");
+});
+
+test("waiting for new context is distinct from failure", () => {
+  assert.equal(maintenanceStatusLabel({status:"completed",waiting_for_context:true}),"进度已保存，尾部等待补充");
 });

@@ -48,12 +48,14 @@ class Monitoring:
         self.job_seconds = Histogram("memory_maintenance_duration_seconds", "Active maintenance execution duration", buckets=(.1, 1, 5, 15, 30, 60, 120, 300, 600), registry=self.registry)
         self.job_wait = Histogram("memory_maintenance_queue_wait_seconds", "Time between enqueue and execution", buckets=(.01, 1, 5, 15, 30, 60, 300, 3600), registry=self.registry)
         self.maintenance_stage = Histogram("memory_maintenance_stage_duration_seconds", "Maintenance phase durations", ["stage"], buckets=(.001, .01, .1, 1, 5, 15, 30, 60, 120, 300), registry=self.registry)
+        self.maintenance_paused = Gauge("memory_maintenance_paused_spaces", "Spaces with automatic maintenance paused by safety guard", registry=self.registry)
         self.maintenance_input = Histogram("memory_maintenance_estimated_input_tokens", "Estimated input tokens per maintenance model call; NOT provider usage", ["source"], buckets=(512, 1024, 2048, 4096, 8000, 16000, 32000, 64000, 128000, 1000000), registry=self.registry)
         self.maintenance_adaptations = Counter("memory_maintenance_adaptations_total", "Automatic maintenance batch reductions", ["reason"], registry=self.registry)
         self.maintenance_omissions = Counter("memory_maintenance_candidate_omissions_total", "Candidate omissions per final batch", ["reason"], registry=self.registry)
         self.maintenance_candidates = Histogram("memory_maintenance_candidates", "Final batch candidates", ["stage"], buckets=(0, 1, 3, 5, 10, 20, 40, 120), registry=self.registry)
         self.maintenance_revived = Counter("memory_maintenance_revived_candidates_total", "Faded candidates admitted by strong cues; does not reinforce", registry=self.registry)
         self.maintenance_fragments = Counter("memory_maintenance_committed_fragments_total", "Committed contiguous message fragments", registry=self.registry)
+        self.maintenance_decisions = Counter("memory_maintenance_decisions_total", "Validated organization decisions", ["mode"], registry=self.registry)
         self.maintenance_deferred = Counter("memory_maintenance_deferred_messages_total", "Messages explicitly deferred for insufficient material", registry=self.registry)
         self.focus_messages = Counter("memory_focus_messages_total", "Focused maintenance and buffer outcomes; scans may repeat", ["outcome"], registry=self.registry)
         self.processed = Counter("memory_processed_messages_total", "Messages committed by maintenance", registry=self.registry)
@@ -73,6 +75,7 @@ class Monitoring:
         return self._model_slots
 
     def refresh(self):
+        self.maintenance_paused.set(sum(1 for r in self.store.list("integration") if r["id"] == "maintenance-safety" and r.get("blocked")))
         snapshot = self.store.operational_snapshot()
         self.embedding_status = self.embedding_provider()
         for state in ("indexed", "pending"):

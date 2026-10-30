@@ -17,6 +17,7 @@ from .focus import select_messages, focus_prompt, validate_focus, cleanup_buffer
 from .conversation import ordered_messages
 from .engine import build_context, event_view, strength_curve
 from .model import parse_json, ContextLimitError, OutputLimitError
+from .maintenance_boundary import fingerprint, validate_boundary
 from .maintenance_context import prepare as prepare_maintenance, supplement as supplement_maintenance, budget_for
 from .monitoring import Monitoring
 from .embedding import Embeddings
@@ -73,9 +74,9 @@ class MemoryService:
                 job.update(status="failed", error="此任务类型已停用", finished_at=iso())
                 self.store.put("job", job, job["space_id"])
                 continue
-            job.update(status="queued", recovered_at=iso())
+            job.update(status="deferred", error="服务曾中断，进度已保留；为避免重复消耗，请手动继续", finished_at=iso())
             self.store.put("job", job, job["space_id"])
-            self.spawn(self.maintain_job(job["space_id"], job["id"], MaintenanceInput.model_validate(job.get("request", {}))))
+            self.pause_maintenance(job["space_id"], job["error"])
         self.scheduler_task = asyncio.create_task(self.scheduler())
         self.embeddings.start()
 
@@ -316,6 +317,22 @@ class MemoryService:
             self.metrics.recall_mode_seconds.labels(measured_mode).observe(time.perf_counter() - started)
 
 
+    def pause_maintenance(self, sid, reason):
+        self.store.put("integration", {"id": "maintenance-safety", "blocked": True, "reason": reason}, sid)
+
+    def ready_maintenance_messages(self, sid, cid, config):
+        conversations = [self.store.get("conversation", cid, sid)] if cid else self.store.list("conversation", sid)
+        states = {r["id"]: r for r in self.store.list("integration", sid)}
+        for conversation in conversations:
+            pending = self.store.pending_messages(sid, conversation["id"], config["maintenance_batch_chars"])
+            if config["focus_person_id"]:
+                candidates = [m for m in self.store.list("message", sid) if not m.get("processed") and not m.get("fixture") and m["conversation_id"] == conversation["id"]]
+                pending, _ = select_messages(self.store, sid, candidates, config)
+                pending = pending[:200]
+            if pending and states.get("maintenance-wait:" + conversation["id"], {}).get("fingerprint") != fingerprint(pending, dict(config, model=self.model_for(sid)[0])):
+                return pending
+        return []
+
     async def maintain_job(self, sid, job_id, body):
         lock = self.maintenance_locks.setdefault(sid, asyncio.Lock())
         async with lock:
@@ -327,11 +344,20 @@ class MemoryService:
             stage = "prepare"
             try:
                 config = self.config_for(sid)
+                root_id = job.get("root_job_id", job_id)
+                runs = {r["id"]: r for r in self.store.list("integration", sid)}
+                run_id = "maintenance-run:" + root_id
+                run = runs.get(run_id, {"id": run_id, "calls": 0, "batches": 0})
+                if run["batches"] >= 8:
+                    raise HTTPException(422, "本轮已达 8 批整理上限，自动整理已暂停；请手动继续剩余消息")
+                run["batches"] += 1
+                self.store.put("integration", run, sid)
                 if body.conversation_id:
                     self.store.get("conversation", body.conversation_id, sid)
-                messages = self.store.pending_messages(sid, body.conversation_id, config["maintenance_batch_chars"])
-                if config["focus_person_id"]:
-                    candidates = [m for m in self.store.list("message", sid) if not m.get("processed") and not m.get("fixture") and (not body.conversation_id or m["conversation_id"] == body.conversation_id)]
+                messages = self.ready_maintenance_messages(sid, body.conversation_id, config)
+                if config["focus_person_id"] and messages:
+                    selected_cid = messages[0]["conversation_id"]
+                    candidates = [m for m in self.store.list("message", sid) if not m.get("processed") and not m.get("fixture") and m["conversation_id"] == selected_cid]
                     messages, summary = select_messages(self.store, sid, candidates, config)
                     job["focus_summary"] = summary
                     self.metrics.focus_messages.labels("scanned").inc(summary["scanned"])
@@ -339,9 +365,17 @@ class MemoryService:
                     messages = messages[:200]
                     job["focus_summary"]["submitted"] = len(messages)
                 if not messages:
+                    if config["focus_person_id"] and "focus_summary" not in job:
+                        candidates = [m for m in self.store.list("message", sid) if not m.get("processed") and not m.get("fixture") and (not body.conversation_id or m["conversation_id"] == body.conversation_id)]
+                        _, summary = select_messages(self.store, sid, candidates, config)
+                        job["focus_summary"] = dict(summary, submitted=0)
+                    waiting = [r for r in self.store.list("integration", sid) if r["id"].startswith("maintenance-wait:") and (not body.conversation_id or r["id"] == "maintenance-wait:" + body.conversation_id)]
+                    if waiting and any(not m.get("processed") and not m.get("fixture") and (not body.conversation_id or m["conversation_id"] == body.conversation_id) for m in self.store.list("message", sid)):
+                        job.update(waiting_for_context=True, waiting_reason="待处理材料未变化，本次未调用模型，继续等待补充")
                     job.update(status="completed", event_ids=[], message_count=0, method="none", finished_at=iso())
                     self.store.put("job", job, sid)
                     return
+                selected_cid = messages[0]["conversation_id"]
                 settings, key = self.model_for(sid)
                 if config["focus_person_id"] and settings["mode"] != "llm":
                     job["focus_summary"].update(submitted=0, deferred=len(messages))
@@ -352,7 +386,7 @@ class MemoryService:
                     return
                 if settings["mode"] == "llm":
                     originals, limit = messages, job.get("adaptive_input_limit")
-                    message_char_limit = job.get("adaptive_message_chars")
+                    message_char_limit = None  # Never inherit a tiny output-retry character slice.
                     adaptations, reads = 0, 0
                     job.update(model_call_count=0, adaptation_count=0, read_rounds=0, attempts=[])
                     while True:
@@ -373,6 +407,11 @@ class MemoryService:
                                 plan = MaintenancePlan.model_validate({"deferred_messages": [
                                     {"message_id": m["id"], "reason": "明确指向的旧事材料无法放入预算，暂缓处理；请调整容量或预算"} for m in messages]})
                                 break
+                            if run["calls"] >= 8:
+                                raise HTTPException(422, "本轮已达 8 次模型调用上限（含重试和补读），自动整理已暂停；请手动继续")
+                            run["calls"] += 1
+                            self.store.put("integration", run, sid)
+                            job.update(run_model_call_count=run["calls"], run_call_limit=8)
                             attempt = {"estimated_input_tokens": prepared["budget"]["estimated_input_tokens"],
                                        "input_limit": prepared["budget"]["input_limit"], "outcome": "running"}
                             job["attempts"].append(attempt)
@@ -382,7 +421,7 @@ class MemoryService:
                             stage = "model"
                             call_started = time.perf_counter()
                             try:
-                                output = await self.model.complete(settings, key, prepared["request"], json_mode=True,
+                                output = await self.model.complete(dict(settings, max_retries=0), key, prepared["request"], json_mode=True,
                                                         purpose="maintenance", metrics=self.metrics,
                                                         max_tokens=prepared["budget"]["output_reserved"])
                             except (ContextLimitError, OutputLimitError) as exc:
@@ -393,11 +432,16 @@ class MemoryService:
                                 adaptations += 1
                                 job["adaptation_count"] = adaptations
                                 self.metrics.maintenance_adaptations.labels(reason).inc()
-                                current = prepared["budget"]["estimated_input_tokens"]
-                                minimum = prepared["budget"]["minimum_input_tokens"]
-                                limit = min(current - 1, minimum + max(1, int((current - minimum) * .55)))
                                 if isinstance(exc, OutputLimitError):
-                                    message_char_limit = max(1, int(sum(len(m["content"]) for m in messages) * .55))
+                                    if len(messages) <= 1:
+                                        raise HTTPException(422, "单条消息输出仍被截断，已暂停；请提高输出上限，不再切碎消息重试")
+                                    keep = max(1, len(messages) // 2)
+                                    selected = {m["id"] for m in messages[:keep]}
+                                    originals = [m for m in originals if m["id"] in selected]
+                                else:
+                                    current = prepared["budget"]["estimated_input_tokens"]
+                                    minimum = prepared["budget"]["minimum_input_tokens"]
+                                    limit = min(current - 1, minimum + max(1, int((current - minimum) * .55)))
                                 retry = True
                                 break
                             except BaseException:
@@ -549,6 +593,14 @@ class MemoryService:
                                 reinforcement_count += 1
                             reinforcement_covered.add(proposal.message_id)
                     covered |= reinforcement_covered
+                    if method == "llm" and (covered or "processed_through_message_id" in plan.model_fields_set):
+                        tail, cursor = validate_boundary(plan, messages, covered, prepared["data"]["force_progress"])
+                        deferred_ids = set(tail)
+                        job.update(waiting_for_context=bool(tail) and "processed_through_message_id" in plan.model_fields_set, processed_through_message_id=cursor,
+                                   force_progress=prepared["data"]["force_progress"],
+                                   waiting_reason=plan.waiting_reason or "尾部信息尚不完整，等待新增消息",
+                                   deferred_messages=[{"message_id": mid, "reason": plan.waiting_reason or "等待补充"} for mid in tail])
+                    job["ignored_messages"] = [entry.model_dump() for entry in plan.ignored_messages]
                     if deferred_ids & reinforcement_covered:
                         raise HTTPException(502, "暂缓消息不能同时用于强化")
                     if not covered and not deferred_ids:
@@ -576,8 +628,16 @@ class MemoryService:
                                fragment_count=len(covered),
                                reinforcement_count=reinforcement_count, operation_count=len(plan.merges) + len(plan.splits),
                                method=method, finished_at=iso())
+                    if job.get("waiting_for_context"):
+                        pending_after = [dict(m, maintenance_offset=message_map[m["id"]]["fragment"]["end"]) if m["id"] in covered else m for m in originals]
+                        pending_after = [m for m in pending_after if m.get("maintenance_offset", 0) < len(m["content"])]
+                        self.store.put("integration", {"id": "maintenance-wait:" + selected_cid,
+                            "fingerprint": fingerprint(pending_after, dict(config, model=settings)), "reason": job["waiting_reason"]}, sid, con=con)
+                        job["status"] = "completed"
                     self.store.put("job", job, sid, con=con)
                 self.metrics.maintenance_stage.labels("commit").observe(time.perf_counter() - commit_started)
+                if "force_progress" in job:
+                    self.metrics.maintenance_decisions.labels("waiting" if job.get("waiting_for_context") else "forced" if job["force_progress"] else "normal").inc()
                 self.metrics.processed.inc(completed_messages)
                 if config["focus_person_id"]:
                     for outcome in ("retained", "ignored", "deferred"):
@@ -585,24 +645,30 @@ class MemoryService:
                 self.metrics.maintenance_fragments.inc(len(covered))
                 self.metrics.maintenance_deferred.inc(len(deferred_ids))
                 self.metrics.reinforcements.labels("maintenance").inc(reinforcement_count)
-                remaining = self.store.pending_messages(sid, body.conversation_id, 200)
-                if config["focus_person_id"]:
-                    remaining = [m for m in self.store.list("message", sid) if not m.get("processed") and not m.get("fixture")
-                                 and (not body.conversation_id or m["conversation_id"] == body.conversation_id)]
-                    remaining, _ = select_messages(self.store, sid, remaining, config)
-                if covered == message_ids and not deferred_ids and remaining:
+                remaining = self.ready_maintenance_messages(sid, body.conversation_id, config)
+                if remaining and (covered != message_ids or deferred_ids) and not job.get("waiting_for_context"):
+                    job.update(status="deferred", error="本批有未解决的消息，自动整理已暂停；进度已保存，请手动继续")
+                    self.store.put("job", job, sid)
+                if remaining and (job.get("waiting_for_context") or (covered == message_ids and not deferred_ids)):
                     try:
-                        child = self.enqueue(sid, body, "continuation", inherited_limit=limit if method == "llm" else None,
-                                        inherited_message_chars=message_char_limit if method == "llm" else None)
+                        if run["calls"] >= 8 or run["batches"] >= 8:
+                            job.update(status="deferred", error="本轮调用或批次数已达安全上限，进度已保存；自动整理已暂停，请手动继续")
+                            self.store.put("job", job, sid)
+                            self.pause_maintenance(sid, job["error"])
+                            return
+                        # Recover input capacity gradually; output retries never constrain future batches.
+                        recovered = min(config["maintenance_input_token_budget"], int(limit * 1.5)) if method == "llm" and limit else None
+                        child = self.enqueue(sid, body, "continuation", inherited_limit=recovered)
                         child.update(parent_job_id=job_id, root_job_id=job.get("root_job_id", job_id))
                         self.store.put("job", child, sid)
                         job["continuation_job_id"] = child["id"]
                         self.store.put("job", job, sid)
                     except HTTPException:
-                        job["continuation_pending"] = True
+                        job.update(status="deferred", error="续批未能入队，自动整理已暂停；请手动继续", continuation_pending=True)
                         self.store.put("job", job, sid)
             except asyncio.CancelledError:
-                job.update(status="queued", error="服务关闭时中断，重启后恢复", finished_at=iso())
+                job.update(status="deferred", error="服务关闭时中断，进度已保留；请手动继续", finished_at=iso())
+                self.pause_maintenance(sid, job["error"])
                 self.store.put("job", job, sid)
                 raise
             except Exception as exc:
@@ -612,6 +678,8 @@ class MemoryService:
                 job.update(status="failed", error=detail, error_detail=diagnostic, finished_at=iso())
                 self.store.put("job", job, sid)
             finally:
+                if job["status"] in ("failed", "deferred"):
+                    self.pause_maintenance(sid, job.get("error", "整理材料暂缓，请手动继续"))
                 self.metrics.jobs.labels(job["status"], job.get("trigger", "manual")).inc()
                 self.metrics.job_seconds.observe(time.perf_counter() - started)
 
@@ -630,6 +698,8 @@ class MemoryService:
         job = self.store.put("job", {"id": new_id("job"), "space_id": sid, "type": "maintenance", "status": "queued", "trigger": trigger,
                                "created_at": iso(), "request": request, "retry_of": retry_of,
                                "event_ids": [], "message_count": 0, "adaptive_input_limit": inherited_limit, "adaptive_message_chars": inherited_message_chars}, sid)
+        if trigger in ("manual", "retry"):
+            self.store.put("integration", {"id": "maintenance-safety", "blocked": False}, sid)
         self.spawn(self.maintain_job(sid, job["id"], body))
         return job
 
@@ -643,6 +713,8 @@ class MemoryService:
                     self.metrics.focus_messages.labels("expired").inc(cleanup_buffer(self.store, sid, cfg))
                     if not cfg["schedule_enabled"]:
                         continue
+                    if any(r["id"] == "maintenance-safety" and r.get("blocked") for r in self.store.list("integration", sid)):
+                        continue
                     now = utcnow()
                     jobs = [j for j in self.store.list("job", sid) if j.get("type", "maintenance") == "maintenance"]
                     if any(j["status"] in ("queued", "running") for j in jobs):
@@ -655,7 +727,7 @@ class MemoryService:
                         local = now.astimezone(ZoneInfo(cfg["timezone"]))
                         hour, minute = map(int, cfg["schedule_daily_time"].split(":"))
                         due = (local.hour, local.minute) >= (hour, minute) and not any(dt(j["created_at"]).astimezone(ZoneInfo(cfg["timezone"])).date() == local.date() for j in scheduled)
-                    if due:
+                    if due and self.ready_maintenance_messages(sid, None, cfg):
                         self.enqueue(sid, MaintenanceInput(), "scheduled")
             except Exception:
                 self.metrics.scheduler_errors.inc()
@@ -753,7 +825,19 @@ class MemoryService:
 
     def conversations(self, sid: str):
         self.config_for(sid)
-        return sorted(self.store.list("conversation", sid), key=lambda c: c["created_at"], reverse=True)
+        conversations = self.store.list("conversation", sid)
+        with self.store.connect() as con:
+            latest = {row[0]: row[1] for row in con.execute(
+                "SELECT json_extract(data,'$.conversation_id'), MAX(json_extract(data,'$.at')) FROM records WHERE kind='message' AND space_id=? GROUP BY json_extract(data,'$.conversation_id')", (sid,))}
+            first = {row[0]: row[1] for row in con.execute(
+                "SELECT json_extract(data,'$.conversation_id'), substr(json_extract(data,'$.content'),1,60) FROM records WHERE kind='message' AND space_id=? AND json_extract(data,'$.role')='user' ORDER BY json_extract(data,'$.at') DESC", (sid,))}
+        result = []
+        for conversation in conversations:
+            row = dict(conversation, last_message_at=latest.get(conversation['id']))
+            if row['title'].startswith('agent-session:'):
+                row['display_title'] = first.get(row['id'], '外部接入会话') + ' · ' + row['id'][-6:]
+            result.append(row)
+        return sorted(result, key=lambda c: c.get('last_message_at') or c['created_at'], reverse=True)
 
 
     def add_conversation(self, sid: str, body: ConversationInput):

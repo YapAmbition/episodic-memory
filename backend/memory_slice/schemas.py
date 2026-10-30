@@ -55,6 +55,7 @@ class MemoryConfig(StrictModel):
     auto_reinforcement_enabled: bool = True
     maintenance_batch_chars: int = Field(32000, ge=20000, le=100000)
     maintenance_input_token_budget: int = Field(8000, ge=1024, le=1000000)
+    maintenance_pending_token_limit: int = Field(4000, ge=512, le=1000000)
     maintenance_safety_tokens: int = Field(512, ge=128, le=100000)
     maintenance_max_adaptations: int = Field(3, ge=0, le=6)
     maintenance_max_read_rounds: int = Field(2, ge=0, le=4)
@@ -206,7 +207,7 @@ class ModelInput(StrictModel):
     timeout_seconds: float = Field(60, ge=1, le=180)
     max_retries: int = Field(2, ge=0, le=3)
     context_window_tokens: Optional[int] = Field(None, ge=2048, le=10000000)
-    maintenance_output_tokens: int = Field(4096, ge=256, le=100000)
+    maintenance_output_tokens: int = Field(8192, ge=256, le=100000)
 
     @model_validator(mode="after")
     def valid_capacity(self):
@@ -297,6 +298,8 @@ class IgnoredMessage(StrictModel):
 
 
 class MaintenancePlan(StrictModel):
+    processed_through_message_id: Optional[str] = None
+    waiting_reason: str = Field("", max_length=500)
     events: list[MaintenanceEvent] = Field(default_factory=list, max_length=30)
     merges: list[MaintenanceMerge] = Field(default_factory=list, max_length=5)
     splits: list[MaintenanceSplit] = Field(default_factory=list, max_length=5)

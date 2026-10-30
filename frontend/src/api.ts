@@ -1,3 +1,12 @@
+// Local installer opens the UI with a fragment (never sent in HTTP requests).
+if (window.location.hash.startsWith("#memory-slice-token=")) {
+  const token = window.location.hash.slice("#memory-slice-token=".length);
+  if (/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+    localStorage.setItem("memory-slice-token", token);
+    history.replaceState(null, "", window.location.pathname + window.location.search);
+  }
+}
+
 function serviceToken() {
   const current = localStorage.getItem("memory-slice-token");
   if (current !== null) return current;

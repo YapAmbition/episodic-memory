@@ -1,6 +1,7 @@
 export type Person = { id: string; name: string; relation: string; platform?: string; external_uid?: string; aliases?: string[] };
 export type Space = { id: string; name: string; description: string; host?: {active: boolean; kind?: string; platform?: string; external_id?: string; label: string} };
 export type Conversation = {
+  display_title?: string;
   kind?: "direct" | "group";
   id: string;
   person_id: string;
@@ -9,6 +10,7 @@ export type Conversation = {
   demo?: boolean;
 };
 export type Message = {
+  processed?: boolean;
   person_id?: string; sender_id?: string | null; in_reply_to?: string | null; mention_ids?: string[]; retention?: string;
   id: string;
   role: "user" | "assistant";
@@ -112,11 +114,17 @@ export type Job = {
   budget?: MaintenanceBudget;
   candidates?: { event_id: string; title: string; strength: number; cue: number; score: number; revived: boolean; included: boolean }[];
   model_call_count?: number;
+  run_model_call_count?: number;
+  run_call_limit?: number;
   adaptation_count?: number;
   read_rounds?: number;
   fragment_count?: number;
   fragments?: { message_id: string; start: number; end: number; total: number }[];
   attempts?: { estimated_input_tokens: number; input_limit: number; outcome: string; elapsed_ms?: number }[];
+  waiting_for_context?: boolean;
+  waiting_reason?: string;
+  force_progress?: boolean;
+  ignored_messages?: { message_id: string; reason: string }[];
   deferred_messages?: { message_id: string; reason: string }[];
   parent_job_id?: string;
   continuation_job_id?: string;
@@ -181,6 +189,7 @@ export type Config = {
   auto_reinforcement_enabled: boolean;
   maintenance_batch_chars: number;
   maintenance_input_token_budget: number;
+  maintenance_pending_token_limit: number;
   maintenance_safety_tokens: number;
   maintenance_max_adaptations: number;
   maintenance_max_read_rounds: number;

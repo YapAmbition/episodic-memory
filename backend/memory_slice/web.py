@@ -248,6 +248,8 @@ def create_app(
                     from .benchmark import dataset_directory
                     baseline_file = dataset_directory() / "baselines/local-v1.json"
                     baseline = json.loads(baseline_file.read_text()) if baseline_file.exists() else None
+                    if baseline:
+                        baseline.get("config", {}).setdefault("maintenance_pending_token_limit", 4000)
                     compatible = baseline and all(baseline.get(k) == report.get(k) for k in ("dataset_sha256", "config", "k"))
                     report["baseline"] = baseline["summaries"]["local"] if compatible else None
                     previous = {r["id"]: r for r in baseline["results"]} if compatible else {}

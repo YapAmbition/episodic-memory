@@ -71,7 +71,7 @@
   },
   "output_tokens": {
     "type": "int",
-    "default": 4096,
+    "default": 8192,
     "description": "整理输出预留 token 数"
   },
   "ignore_prefixes": {

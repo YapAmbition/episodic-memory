@@ -1,0 +1,4 @@
+interface:
+  display_name: "记忆切片 · Memory Slice"
+  short_description: "安装和使用事件记忆服务，跨会话保存、整理并召回与用户有关的事情"
+  default_prompt: "使用 $memory-slice 为当前 Agent 配置事件记忆，并检查服务与接入状态。"

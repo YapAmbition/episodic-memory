@@ -226,7 +226,7 @@ export function SettingsPage({
         timeout_seconds: connection.timeout_seconds ?? 60,
         max_retries: connection.max_retries ?? 2,
         context_window_tokens: connection.context_window_tokens ?? null,
-        maintenance_output_tokens: connection.maintenance_output_tokens ?? 4096,
+        maintenance_output_tokens: connection.maintenance_output_tokens ?? 8192,
         ...(key ? { api_key: key } : {}),
       });
       onModel(result);
@@ -482,6 +482,7 @@ export function SettingsPage({
             </div>
             <div className="maintenance-budget-intro"><Sparkles size={21} /><div><strong>{model.context_window_tokens ? `已配置上下文 ${model.context_window_tokens.toLocaleString()} token` : "模型容量未知 · 使用保守预算"}</strong><p>当前输入上限 {Math.max(0, maintenanceInputLimit(draft, model)).toLocaleString()} token；统一计入提示词、新对话、旧事材料和人物资料。按 UTF-8 保守估算，首次请求仍可能超限。容量与输出预留可在<button className="text-button" onClick={() => setTab("model")}>模型连接</button>中设置。</p></div></div>
             {field({ key: "maintenance_input_token_budget", label: "整理输入预算", description: "容量未知时使用此预算；已配置容量时，还会扣除输出和安全预留。", min: 1024, max: 128000, step: 64, suffix: "token" })}
+            {field({ key: "maintenance_pending_token_limit", label: "待整理内容上限", description: "按估算 token 计；达到上限或本批输入容量时，必须记录阶段性事实或明确跳过，不再无限等待。", min: 512, max: 128000, step: 256, suffix: "token" })}
             {field({ key: "maintenance_safety_tokens", label: "安全余量", description: "已配置上下文容量时额外预留，补偿估算与提供方包装差异。", min: 128, max: 8192, step: 128, suffix: "token" })}
             {field({ key: "maintenance_max_adaptations", label: "超限后最多缩批次数", description: "明确上下文超限或输出达到上限时，缩小批次再试；鉴权和普通参数错误不会触发。", min: 0, max: 6, step: 1, suffix: "次" })}
             {field({ key: "maintenance_max_read_rounds", label: "旧事补读轮次", description: "模型可按原文位置请求必要材料；放不下或轮次用尽时暂缓，不凭片段强行修改。", min: 0, max: 4, step: 1, suffix: "轮" })}
@@ -701,7 +702,7 @@ export function SettingsPage({
             </label>
             <div className="schedule-form">
               <label className="field-label">上下文容量（可选，token）<input type="number" min="2048" max="10000000" placeholder="未知，留空也可使用" value={connection.context_window_tokens ?? ""} onChange={e => setConnection(c => ({ ...c, context_window_tokens: e.target.value === "" ? null : Number(e.target.value) }))} /></label>
-              <label className="field-label">整理输出预留（token）<input type="number" min="256" max="100000" value={connection.maintenance_output_tokens ?? 4096} onChange={e => setConnection(c => ({ ...c, maintenance_output_tokens: Number(e.target.value) }))} /></label>
+              <label className="field-label">整理输出预留（token）<input type="number" min="256" max="100000" value={connection.maintenance_output_tokens ?? 8192} onChange={e => setConnection(c => ({ ...c, maintenance_output_tokens: Number(e.target.value) }))} /></label>
             </div>
             <p className="subtle-note">填写当前服务实际开放的容量，保存连接后生效。容量不会根据模型名称自动猜测；输出预留仅用于事件整理。</p>
             <label className="field-label">
