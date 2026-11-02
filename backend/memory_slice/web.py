@@ -21,6 +21,7 @@ from .schemas import (
     EmbeddingInput,
     ChatInput,
     ContextInput,
+    RecallInput,
     ConversationInput,
     EventInput,
     MaintenanceInput,
@@ -165,7 +166,7 @@ def create_app(
             path = request.url.path.removeprefix("/api/v1")
             allowed = bool(
                 re.fullmatch(
-                    r"/spaces/[^/]+/(?:events(?:/[^/]+(?:/(?:split|reinforce))?)?|context|search|benchmarks|maintenance|jobs/[^/]+/retry|recalls/[^/]+/feedback)",
+                    r"/spaces/[^/]+/(?:events(?:/[^/]+(?:/(?:split|reinforce))?)?|context|recall|search|benchmarks|maintenance|jobs/[^/]+/retry|recalls/[^/]+/feedback)",
                     path,
                 )
             )
@@ -426,6 +427,10 @@ def create_app(
     @api.post("/spaces/{sid}/events/{eid}/reinforce", tags=["Events"])
     def reinforce(sid: str, eid: str, body: ReinforceInput):
         return service.reinforce(sid, eid, body)
+
+    @api.post("/spaces/{sid}/recall", tags=["Memory"])
+    async def retrieve(sid: str, body: RecallInput, request: Request):
+        return await cancellable_recall(request, service.retrieve(sid, body))
 
     @api.post("/spaces/{sid}/context", tags=["Memory"])
     async def context(sid: str, body: ContextInput, request: Request):

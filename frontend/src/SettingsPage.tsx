@@ -159,6 +159,7 @@ const graphFields: SliderDef[] = [
     step: 1,
     suffix: "件",
   },
+  { key: "recall_default_limit", label: "核心召回默认条数", description: "结构化召回接口未传 limit 时返回的事件上限；不保证凑满。独立于注入数量和字符预算。", min: 1, max: 120, step: 1, suffix: "件" },
   {
     key: "max_events",
     label: "上下文事件上限",

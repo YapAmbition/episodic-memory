@@ -1455,7 +1455,7 @@ export default function App() {
             {page === "graph" && (
               <GraphPage events={events} onOpen={setEventModal} />
             )}
-            {page === "settings" && managed && config && <><PluginConfiguration config={config} /><EmbeddingSettings key={sid} sid={sid} readOnly onError={(e) => setError(String(e))} /></>}
+            {page === "settings" && managed && config && <><PluginConfiguration config={config} space={spaces.find(s => s.id === sid)} /><EmbeddingSettings key={sid} sid={sid} readOnly onError={(e) => setError(String(e))} /></>}
             {page === "settings" && !managed && config && model && (
               <SettingsPage
                 sid={sid}

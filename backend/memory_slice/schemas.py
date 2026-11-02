@@ -46,6 +46,7 @@ class MemoryConfig(StrictModel):
     propagation_decay: float = Field(0.72, ge=0.05, le=0.99)
     max_depth: int = Field(3, ge=0, le=8)
     max_seeds: int = Field(3, ge=1, le=12)
+    recall_default_limit: int = Field(8, ge=1, le=120)
     max_events: int = Field(8, ge=1, le=30)
     context_char_budget: int = Field(18000, ge=1000, le=100000)
     fragment_target_chars: int = Field(1500, ge=200, le=10000)
@@ -163,8 +164,8 @@ class EventInput(StrictModel):
     expected_version: Optional[int] = Field(None, ge=1)
 
 
-class ContextInput(StrictModel):
-    current_context: Optional[list[str]] = None
+class RecallInput(StrictModel):
+    limit: Optional[int] = Field(None, ge=1, le=120)
 
     person_id: Optional[str] = None
     reply_to_person_id: Optional[str] = None
@@ -187,6 +188,10 @@ class ContextInput(StrictModel):
             if message.get("role") not in ("user", "assistant") or not isinstance(message.get("content"), str) or len(message["content"]) > 20000:
                 raise ValueError("近期消息必须包含 user/assistant 角色和不超过 20000 字符的 content")
         return self
+
+
+class ContextInput(RecallInput):
+    current_context: Optional[list[str]] = None
 
 
 class SearchInput(ContextInput):

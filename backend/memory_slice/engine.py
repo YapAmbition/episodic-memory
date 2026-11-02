@@ -72,7 +72,7 @@ def event_view(event, at, config):
     return dict(event, memory=state, memory_status="future" if state["future"] else "active" if state["strength"] >= .45 else "quiet" if state["strength"] >= .20 else "dormant")
 
 
-def build_context(events, person_id, query, at, config, mode="associative", semantic_matches=None, entry_ids=None, rank_scores=None, search_only=False, current_context=None):
+def build_context(events, person_id, query, at, config, mode="associative", semantic_matches=None, entry_ids=None, rank_scores=None, search_only=False, current_context=None, result_limit=None):
     started = time.perf_counter()
     semantic_matches = semantic_matches or {}
     from .focus import person_score
@@ -141,6 +141,34 @@ def build_context(events, person_id, query, at, config, mode="associative", sema
             if propagated >= config["activation_threshold"]:
                 heapq.heappush(heap, (-propagated, target, depth + 1, path + [target], edge_relation))
     graph_at = time.perf_counter()
+    if result_limit is not None:
+        from .event_fragments import split_body
+        ranked = sorted(best.values(), key=lambda a: (-a['score'], a['event_id']))
+        items = []
+        for rank, activation in enumerate(ranked[:result_limit], 1):
+            event = all_events[activation['event_id']]
+            parts = split_body(event['body'], config.get('fragment_target_chars', 1500), config.get('fragment_max_chars', 3000))
+            corrections = set()
+            for p in parts:
+                if re.search(r'更正|纠正|修正|撤回|作废|不再|correction|supersed', p['text'], re.I):
+                    corrections.update(i for i, q in enumerate(parts) if q['section_first'] == p['section_first'])
+            for i, p in enumerate(parts):
+                dependencies = {0, p['section_first']} | corrections
+                if i > p['section_first']:
+                    dependencies.add(i - 1)
+                dependencies.discard(i)
+                p['dependencies'] = [parts[j]['id'] for j in sorted(dependencies)]
+                p['score'] = activation['score'] * (.25 + .75 * max([cosine(query, line) for line in p['text'].splitlines()] or [0]))
+            items.append(dict(activation, rank=rank, version=event.get('version', 1),
+                              event=event_view(event, at, config), fragments=parts))
+        return dict(id=new_id('recall'), at=iso(at), person_id=person_id, query=query, mode=mode,
+                    strategy='hybrid_embedding' if semantic_matches else 'local_anchors',
+                    seeds=[s['event_id'] for s in seeds], candidates=candidates,
+                    items=items, limit=result_limit, returned_count=len(items),
+                    truncated=len(ranked) > result_limit,
+                    elapsed_ms=round((time.perf_counter()-started)*1000, 2),
+                    timings_ms=dict(fusion=round((ranked_at-started)*1000, 3),
+                                    graph_expansion=round((graph_at-ranked_at)*1000, 3), context_build=0))
     from .recall_fragments import assemble
     selected, omitted, context = assemble(best.values(), all_events, candidates, at, config, query,
                                          current_context, event_view, cosine)
@@ -156,3 +184,13 @@ def build_context(events, person_id, query, at, config, mode="associative", sema
 
 def strength_curve(event, at, config):
     return [{"days": day, "strength": memory_strength(event, at + timedelta(days=day), config)["strength"]} for day in (0, 7, 14, 30, 60, 90, 180, 365)]
+
+
+def retrieve_events(events, person_id, query, at, config, mode="associative", semantic_matches=None,
+                    entry_ids=None, rank_scores=None, limit=None):
+    """Pure ranked retrieval. No history parsing, injection budget, or XML rendering."""
+    limit = config.get('recall_default_limit', 8) if limit is None else limit
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 120:
+        raise ValueError('limit must be an integer between 1 and 120')
+    return build_context(events, person_id, query, at, dict(config, max_seeds=len(events)),
+                         mode, semantic_matches, entry_ids, rank_scores, result_limit=limit)

@@ -1,37 +1,13 @@
 """Lossless, deterministic event views. No model call or mutation of canonical events."""
-import hashlib
 import re
 
 from .context_protocol import RULES, inspect_context, inspect_fragments, memory_block
 
 
-def split_body(body, target=1500, maximum=3000):
-    if not 0 < target <= maximum:
-        raise ValueError('片段目标必须大于零且不超过硬上限')
-    # Keep structural sections independent so appending a new section preserves old IDs.
-    boundaries = [0] + [m.start() for m in re.finditer(r'(?m)^#{1,6} ', body) if m.start()] + [len(body)]
-    result = []
-    for left, right in zip(boundaries, boundaries[1:]):
-        section_first = len(result)
-        start = left
-        while start < right:
-            end = min(right, start + maximum)
-            if right - start > target:
-                # Prefer a paragraph ending near the target, then a sentence/line boundary.
-                for pattern in (r'\n\s*\n', r'[。！？.!?](?:\s|$)|\n'):
-                    cuts = [start + m.end() for m in re.finditer(pattern, body[start:end])
-                            if m.end() >= target // 2]
-                    if cuts:
-                        end = min(cuts, key=lambda x: (abs(x - start - target), x))
-                        break
-            text = body[start:end]
-            fid = 'part_' + hashlib.sha256((str(start) + ':' + text).encode()).hexdigest()[:20]
-            result.append(dict(id=fid, start=start, end=end, text=text, section_first=section_first))
-            start = end
-    return result
+from .event_fragments import split_body
 
 
-def assemble(activations, all_events, candidates, at, config, query, current_context, view, similarity):
+def assemble(activations, all_events, candidates, at, config, query, current_context, view, similarity, prepared=None):
     existing, has_rules = inspect_context(current_context or [])
     seen, prior = inspect_fragments(current_context or [])
     plans, omitted = [], []
@@ -42,7 +18,7 @@ def assemble(activations, all_events, candidates, at, config, query, current_con
         if max(existing.get(eid, 0), prior.get(eid, 0)) > revision or existing.get(eid, 0) == revision:
             omitted.append(dict(event_id=eid, title=event['title'], reason='当前上下文已有同版或更新版本的完整记忆，或更新版本片段'))
             continue
-        parts = split_body(event['body'], config.get('fragment_target_chars', 1500), config.get('fragment_max_chars', 3000))
+        parts = prepared[eid] if prepared is not None else split_body(event['body'], config.get('fragment_target_chars', 1500), config.get('fragment_max_chars', 3000))
         known = seen.get((eid, revision), set())
         previous = max(existing.get(eid, 0), prior.get(eid, 0))
         # Explicit correction sections are mandatory context for ANY partial view.
@@ -58,9 +34,12 @@ def assemble(activations, all_events, candidates, at, config, query, current_con
             # A mid-section excerpt can rely on the immediately preceding passage.
             if i > part['section_first']:
                 dependencies.add(i - 1)
+            if prepared is not None:
+                required = set(part['dependencies']) | {part['id']}
+                dependencies = {j for j, p in enumerate(parts) if p['id'] in required}
             dependencies = {j for j in dependencies if parts[j]['id'] not in known}
             score = max([similarity(query, line) for line in part['text'].splitlines()] or [0])
-            units.append(dict(index=i, dependencies=dependencies, score=activation['score'] * (.25 + .75 * score)))
+            units.append(dict(index=i, dependencies=dependencies, score=part['score'] if prepared is not None else activation['score'] * (.25 + .75 * score)))
         if not units:
             omitted.append(dict(event_id=eid, title=event['title'], reason='当前上下文已有本版全部片段'))
             continue

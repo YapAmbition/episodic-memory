@@ -1,5 +1,5 @@
 export type Person = { id: string; name: string; relation: string; platform?: string; external_uid?: string; aliases?: string[] };
-export type Space = { id: string; name: string; description: string; host?: {active: boolean; kind?: string; platform?: string; external_id?: string; label: string} };
+export type Space = { id: string; name: string; description: string; host?: {injection_policy?: {recall_limit: number; context_char_budget: number}; active: boolean; kind?: string; platform?: string; external_id?: string; label: string} };
 export type Conversation = {
   display_title?: string;
   kind?: "direct" | "group";
@@ -187,6 +187,7 @@ export type Config = {
   propagation_decay: number;
   max_depth: number;
   max_seeds: number;
+  recall_default_limit: number;
   max_events: number;
   context_char_budget: number;
   fragment_target_chars: number;

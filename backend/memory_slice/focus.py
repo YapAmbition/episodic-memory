@@ -106,6 +106,8 @@ def cleanup_buffer(store, sid, config):
         for trace in store.list('recall', sid, con):
             if trace.get('expires_at') and dt(trace['expires_at']) <= utcnow():
                 store.delete('recall', trace['id'], sid, con)
+        if not con.execute("SELECT 1 FROM records WHERE kind='message' AND space_id=? AND json_extract(data,'$.retention')='buffer' LIMIT 1", (sid,)).fetchone():
+            return 0
         messages = store.list('message', sid, con)
         protected = set()
         for kind in ('event', 'fragment'):

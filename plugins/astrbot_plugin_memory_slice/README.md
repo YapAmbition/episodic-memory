@@ -1,12 +1,12 @@
 # 记忆切片 · Memory Slice for AstrBot
 
-插件版本 **0.3.1**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
+插件版本 **0.3.3**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
 
 ## 安装
 
 要求 **AstrBot >= 4.24.0**，使用其内置 LLM/Agent 流程。该最低版本来自本轮临时内容块 API；不支持绕过版本限制安装到旧版。外接 Dify 等未触发标准请求钩子的执行器尚未适配。
 
-1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.2.zip`。
+1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.3.zip`。
 2. 如果使用手工安装，将 ZIP 中的 `astrbot_plugin_memory_slice` 文件夹放到 AstrBot 的 `data/plugins/` 下；在 AstrBot 的 Python 环境安装该目录的 `requirements.txt`，然后重载插件。
 3. 插件配置中选择已有聊天模型；留空时跟随当前会话。无需填写新的 API Key 或模型地址。
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
@@ -139,7 +139,7 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 构建脚本先在本机执行 React 生产构建（首次自动执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
-默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.2.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
+默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.3.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 
 当前通过 25 项插件测试、113 项核心/HTTP 回归测试和 17 项前端工具测试。新增覆盖网页鉴权、同实例共享、只读配置、事件编辑、整理、端口释放及重启。插件测试使用真实共享核心、SQLite 和模拟 AstrBot 宿主，覆盖事件整理/召回、群聊筛选与隔离、重载、去重、超时取消、模型输出截断、临时注入、发送后记录、故障不阻断聊天及包内核心一致性。
 
@@ -158,12 +158,24 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 ### 请求上下文与记忆去重
 
-核心 `/context` 输入新增可选 `current_context: string[]`，传入当前模型请求中实际存在的文本块（包括系统提示、历史、本轮输入和额外文本）。不传时保持原有召回行为；不要用永久会话历史代替实际请求。核心扫描全部文本检查完整记忆块，查询线索按近期字符预算选择，并排除协议记忆及规则块，不把全部上下文发送给 Embedding。
+旧兼容接口（当前插件不使用）：核心 `/context` 输入新增可选 `current_context: string[]`，传入当前模型请求中实际存在的文本块（包括系统提示、历史、本轮输入和额外文本）。不传时保持原有召回行为；不要用永久会话历史代替实际请求。核心扫描全部文本检查完整记忆块，查询线索按近期字符预算选择，并排除协议记忆及规则块，不把全部上下文发送给 Embedding。
 
 事件输出使用 `<memory-slice id="event_123" revision="2" supersedes="1">完整正文</memory-slice>`；revision 复用事件存储版本，修改事件会递增。正文 XML 转义。同 ID 在当前上下文已有同版或更新版本时跳过，旧版则输出最新完整记录，去重原因位于 `omitted`。旧 `<event>` 格式不会误判为新版协议。
 
 规则使用 `<memory-slice-rules version="1">…</memory-slice-rules>`；有记忆输出且当前上下文缺少本版完整规则时附带。上下文裁剪后可再次注入，不维护会话永久已读状态。规则占用上下文字符预算。标签检测不是安全认证，接入方应传递真实请求内容。
 
-AstrBot 插件从 ProviderRequest 传递当前可见文本，仍使用临时注入，不修改历史；后续框架裁剪或其他插件修改不在此快照内。状态命令为 `/记忆切片`，召回仅支持 local/hybrid；hybrid 可能增加聊天延迟，失败自动降级。
+AstrBot 插件从 ProviderRequest 读取当前可见文本，在插件侧调用共用组装函数去重，仍使用临时注入，不修改历史；后续框架裁剪或其他插件修改不在此快照内。状态命令为 `/记忆切片`，召回仅支持 local/hybrid；hybrid 可能增加聊天延迟，失败自动降级。
 
 已消费聊天原文默认在处理完成 30 天后由内嵌核心自动清理，事件记忆保留。可在内嵌前端「整理」设置中配置，或在高级记忆配置设置 `message_cleanup_enabled` 和 `processed_message_retention_days`。旧数据没有完成时间时从新版首次清理检查起算，不会升级后立即删除。
+
+
+### 插件侧召回与去重
+
+在 AstrBot 配置中设置 `recall_limit`（默认 8，范围 1–120）和 `context_char_budget`（默认 18000，范围 1000–100000 字符）。插件每次向核心结构化召回入口显式传入 `limit=recall_limit`；长度是插件注入预算，不是核心检索的过滤条件。
+
+插件读取 ProviderRequest 当前实际可见的系统提示、全部历史、当前输入和额外文本，在本地调用共用组装函数完成事件/片段版本去重，再应用条数及字符预算，最后临时注入。规则和标签也计入字符数；完整同版记忆不重复注入，同版缺失片段可补充，新版会标明更新关系。不会把完整历史交给核心进行去重。只检查当前请求快照，不用永久“已发送”标记，记忆从上下文移除后可以再次注入。
+
+去重后可能少于设置条数或为空，不会循环补查。未提供 ProviderRequest 时无法判断现有上下文，仍执行数量和长度限制。旧安装若没有这两个专用字段，兼容读取高级 JSON 的 `max_events`/`context_char_budget`；专用字段存在时优先采用专用字段。前文关于核心 `/context` 去重的说明仅适用于旧兼容接口，插件现使用 `retrieve` + 本地组装流程。
+
+
+0.3.3：插件最终注入指标使用 `memory_plugin_injections_total`、`memory_plugin_events`、`memory_plugin_duration_seconds`；`/记忆切片` 展示最近一次结果。管理页面显示插件的每轮实际限制。近期线索按入库顺序限量读取，引用按 ID 查找。失败日志含阶段、错误分类、诊断编号及代码位置，不输出异常正文。

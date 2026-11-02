@@ -4,7 +4,7 @@ import { api, post } from "./api";
 import type { Config, Conversation, Message, Person, Recall, Space, Stats } from "./types";
 import "./plugin.css";
 
-export function PluginConfiguration({config}: {config: Config}) {
+export function PluginConfiguration({config, space}: {config: Config; space?: Space}) {
   return <section className="plugin-console">
     <div className="page-heading"><div><div className="eyebrow">ASTRBOT · CONFIGURATION</div><h1>一处配置，共同生效。</h1><p>模型、关注对象和整理计划由 AstrBot 插件配置管理。</p></div><ShieldCheck size={30}/></div>
     <div className="plugin-notice">请到 AstrBot → 插件 → 记忆切片 → 配置修改，保存后重载插件。这里展示当前空间实际使用的参数；事件正文可以在「事件记忆」中编辑。</div>
@@ -13,8 +13,8 @@ export function PluginConfiguration({config}: {config: Config}) {
       <article><small>召回方式</small><strong>{config.default_retrieval_mode === "hybrid" ? "语义增强召回" : "程序多路召回"}</strong></article>
       <article><small>自动整理</small><strong>{config.schedule_enabled ? `每 ${config.schedule_interval_minutes} 分钟` : "已暂停"}</strong></article>
       <article><small>基础半衰期</small><strong>{config.half_life_days} 天</strong></article>
-      <article><small>上下文字符上限</small><strong>{config.context_char_budget.toLocaleString()}</strong></article>
-      <article><small>上下文事件上限</small><strong>{config.max_events} 件</strong></article>
+      <article><small>每轮新增注入字符上限</small><strong>{(space?.host?.injection_policy?.context_char_budget ?? config.context_char_budget).toLocaleString()}</strong></article>
+      <article><small>每轮召回 / 新增事件上限</small><strong>{space?.host?.injection_policy?.recall_limit ?? config.max_events} 件</strong></article>
       <article><small>片段目标 / 硬上限</small><strong>{config.fragment_target_chars} / {config.fragment_max_chars} 字符</strong></article>
       <article><small>关联展开深度</small><strong>{config.max_depth} 层</strong></article>
     </div>

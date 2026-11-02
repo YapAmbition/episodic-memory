@@ -304,3 +304,19 @@ Codex 同步从首次启用时刻开始，不自动导入此前历史；页面�
 召回先定位事件，再按当前问题与片段文本的程序相似度排序，暂未利用 embedding 对事件内部片段再次打分。选中片段同时带上事件首段、所在阶段首段、必要前段，以及识别到的更正阶段。更正识别使用规则，不保证识别所有隐含依赖；必要依赖放不下时不输出孤立片段。短事件仍完整注入，同一事件多个片段计一件。
 
 协议规则升级为 v2，部分记忆带 `partial="true"` 和 `parts` 标识，按事件、版本及片段去重。同版片段可以跨轮补充；新版本优先且重新召回，不把部分记忆当完整替换。前端召回卡展示实际片段和原文位置；接口 selected 中增加 partial、injected_body、total_fragments、fragments。监控新增 memory_recall_fragments 与 memory_recall_partial_events_total。
+
+### 结构化召回与上下文组装
+
+新接入使用 `POST /api/v1/spaces/{space_id}/recall`，例如：
+
+```json
+{"query":"上次烤面包失败","retrieval_mode":"hybrid","limit":8}
+```
+
+`limit` 为最多返回的事件数（1–120），省略时使用空间的 `recall_default_limit`，默认 8。只返回通过现有激活门槛的事件，不凑满。门槛是工程评分而非匹配概率；普通唤醒和主动回想沿用各自门槛。候选池仍受检索配置约束，不保证遍历全库；`truncated` 表示本轮已激活结果超过 limit，候选池截断另见 `retrieval.catalog_omitted_ids` 和 `graph_omitted_count`。
+
+返回 `items`（按分数排序），每项包含 `event_id`、`version`、`score`、完整 `event` 和 `fragments`。片段包含稳定 ID、原文字符位置、正文、评分和依赖片段 ID。片段不另占事件数量。该接口不接收 `current_context`，不进行聊天历史去重，也不受注入字符预算约束，因此响应可能大于 18,000 字符。
+
+Python 接入调用 `await service.retrieve(space_id, RecallInput(...))`，然后在接入侧调用共用函数 `memory_slice.context_assembly.assemble_context(result, config, current_context)`。组装函数根据完整当前上下文去重、处理版本/片段依赖，并应用 `max_events` 和 `context_char_budget`（默认 8 件、18,000 字符）；不发起新检索或模型请求，也不修改原结果。AstrBot 已采用此流程。若希望去重后仍有更多候选，接入方可显式提高检索 limit。
+
+旧 `/context` 和 `service.recall` 作为兼容的一站式上下文接口保留；前端对话实验室及旧调用方仍可继续使用。`/search` 保留原候选查询语义。

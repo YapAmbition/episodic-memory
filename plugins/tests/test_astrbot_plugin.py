@@ -6,6 +6,7 @@ import tempfile
 import time
 import types
 import unittest
+from unittest.mock import AsyncMock, patch
 import zipfile
 import shutil
 import httpx
@@ -164,6 +165,81 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             self.runtime.core.config_for(record["space_id"])["focus_person_id"]
         )
+
+    async def test_explicit_plugin_limits_and_local_dedup(self):
+        await self.reset(recall_limit=2, context_char_budget=1800,
+                         memory_options=json.dumps({"max_events": 1, "context_char_budget": 1000}))
+        event = Event()
+        record = await self.runtime.ingest(event)
+        for i in range(4):
+            self.runtime.core.create_event(record["space_id"], EventInput(
+                title=f"陨石一号 {i}", body="陨石一号烤面包失败", salience=1,
+                anchors={"details": ["陨石一号"]}))
+        request = types.SimpleNamespace(system_prompt="", contexts=[], prompt="陨石一号", extra_user_content_parts=[])
+        spy = AsyncMock(wraps=self.runtime.core.retrieve)
+        with patch.object(self.runtime.core, "retrieve", spy):
+            first = await self.runtime.recall(event, request)
+            self.assertIn("<memory-slice ", first)
+            self.assertLessEqual(len(first), 1800)
+            self.assertLessEqual(first.count("<memory-slice "), 2)
+            body = spy.call_args.args[1]
+            self.assertEqual(body.limit, 2)
+            self.assertNotIn("current_context", body.model_dump())
+            request.contexts = [{"role": "assistant", "content": first}] + [
+                {"role": "user", "content": "普通聊天"} for _ in range(40)]
+            second = await self.runtime.recall(event, request)
+            self.assertEqual(second, "")
+            self.assertEqual(spy.await_count, 2)  # No refill loop after dedup.
+            request.contexts = []
+            self.assertTrue(await self.runtime.recall(event, request))
+
+    async def test_bounded_message_reads_and_injection_report(self):
+        event = Event()
+        record = await self.runtime.ingest(event)
+        self.runtime.core.create_event(record['space_id'], EventInput(
+            title='陨石一号', body='陨石一号面包', salience=1, anchors={'details': ['陨石一号']}))
+        # Calling the old full-history reader is forbidden in the hot path.
+        with patch.object(self.runtime.core, 'messages', side_effect=AssertionError('full scan')):
+            second = Event('陨石一号怎么样了', mid='bounded2')
+            text = await self.runtime.recall(second)
+        self.assertTrue(text)
+        self.runtime.record_injection(second)
+        report = self.runtime.core.store.list('astrbot_injection', record['space_id'])[0]
+        self.assertEqual(report['outcome'], 'injected')
+        self.assertEqual(report['selected'], 1)
+        self.assertEqual(report['characters'], len(text))
+        req = types.SimpleNamespace(system_prompt=text, contexts=[], prompt='', extra_user_content_parts=[])
+        self.assertEqual(await self.runtime.recall(second, req), '')
+        self.runtime.record_injection(second)
+        report = self.runtime.core.store.list('astrbot_injection', record['space_id'])[0]
+        self.assertEqual(report['outcome'], 'duplicate')
+        self.assertEqual(report['deduplicated'], 1)
+        self.assertEqual(self.runtime.scope_info(record['space_id'])['injection_policy']['recall_limit'], 8)
+        prior = self.runtime.core.store.recent_messages_before(record['space_id'], record['conversation_id'], second.get_extra('memory_slice_record')['message']['id'])
+        self.assertEqual([m['id'] for m in prior], [record['message']['id']])
+        self.assertIsNone(self.runtime.core.store.find_message('other-space', record['conversation_id'], message_id=record['message']['id']))
+
+    async def test_ingest_idempotency_never_lists_all_messages(self):
+        original = self.runtime.core.store.list
+        def guarded(kind, *args, **kwargs):
+            if kind == 'message':
+                raise AssertionError('full message scan')
+            return original(kind, *args, **kwargs)
+        with patch.object(self.runtime.core.store, 'list', side_effect=guarded):
+            first = await self.runtime.ingest(Event('same text', mid='dedup-key'))
+            second = await self.runtime.ingest(Event('same text', mid='dedup-key'))
+            self.assertEqual(first['message']['id'], second['message']['id'])
+            self.assertEqual(first['message']['version'], second['message']['version'])
+            with self.assertRaises(MemoryError) as caught:
+                await self.runtime.ingest(Event('different text', mid='dedup-key'))
+            self.assertEqual(caught.exception.status_code, 409)
+
+    async def test_invalid_plugin_limits_fail_configuration(self):
+        for options in ({"recall_limit": 0}, {"recall_limit": 121},
+                        {"recall_limit": True}, {"context_char_budget": 999},
+                        {"context_char_budget": 100001}):
+            with self.assertRaises(ValueError):
+                Runtime(self.host, options, self.tmp.name)
 
     async def test_context_budget_options_reach_core(self):
         await self.reset(memory_options=json.dumps({"max_events": 2, "context_char_budget": 1000}))
@@ -472,7 +548,7 @@ class HookTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(rows[0]["content"], event.message_str)
 
-    async def test_context_forwarding_and_core_dedup_across_long_history(self):
+    async def test_plugin_dedup_across_full_current_history(self):
         event = Event()
         await self.plugin.capture(event)
         binding = event.get_extra("memory_slice_record")
@@ -543,8 +619,44 @@ class HookTests(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
+    async def test_telemetry_failure_keeps_injected_memory_and_reports_own_stage(self):
+        event = Event()
+        await self.plugin.capture(event)
+        binding = event.get_extra('memory_slice_record')
+        self.plugin.runtime.context_char_budget = 1800
+        self.plugin.runtime.core.create_event(binding['space_id'], EventInput(
+            title='陨石一号', body='陨石一号面包失败', salience=1, anchors={'details': ['陨石一号']}))
+        req = types.SimpleNamespace(extra_user_content_parts=[], prompt=event.message_str, system_prompt='', contexts=[])
+        with patch.object(self.plugin.runtime, 'record_injection', side_effect=RuntimeError('storage unavailable')), patch.object(self.module.logger, 'error') as log:
+            await self.plugin.inject(event, req)
+        self.assertEqual(len(req.extra_user_content_parts), 1)
+        wire = req.extra_user_content_parts[0].text
+        self.assertLessEqual(len(wire), 1800)
+        self.assertEqual(wire.count(self.module.PREFIX), 1)
+        self.assertEqual(event.get_extra('memory_slice_injection')['characters'], len(wire))
+        self.assertIn('stage=telemetry', log.call_args.args[0])
+        self.assertIn('记录注入统计', log.call_args.args[0])
+        self.assertNotIn('召回 失败', log.call_args.args[0])
+        self.plugin.runtime.context_char_budget = len(wire) - 1
+        req.extra_user_content_parts = []
+        await self.plugin.inject(event, req)
+        self.assertEqual(req.extra_user_content_parts, [])
+
+    async def test_failure_diagnostic_redacts_exception_content(self):
+        with patch.object(self.module.logger, 'error') as log:
+            try:
+                raise ValueError('secret-api-key private chat body')
+            except ValueError as exc:
+                self.plugin.failed('召回', exc)
+        message = log.call_args.args[0]
+        self.assertIn('code=invalid_input', message)
+        self.assertIn('diagnostic=', message)
+        self.assertIn('location=', message)
+        self.assertNotIn('secret-api-key', message)
+        self.assertNotIn('private chat body', message)
+
     async def test_recall_failure_does_not_break_chat(self):
-        async def failure(event):
+        async def failure(event, request=None):
             raise RuntimeError("model unavailable")
 
         self.plugin.runtime.recall = failure

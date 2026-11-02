@@ -44,6 +44,9 @@ class Store:
                     data TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY(kind,id));
                 CREATE INDEX IF NOT EXISTS records_scope ON records(kind,space_id);
+                CREATE INDEX IF NOT EXISTS message_retention_lookup ON records(kind,space_id,json_extract(data,'$.retention'));
+                CREATE INDEX IF NOT EXISTS message_client_lookup ON records(kind,space_id,json_extract(data,'$.conversation_id'),json_extract(data,'$.client_id'));
+                CREATE INDEX IF NOT EXISTS message_conversation_lookup ON records(kind,space_id,json_extract(data,'$.conversation_id'));
                 CREATE TABLE IF NOT EXISTS versions (
                     id TEXT PRIMARY KEY, event_id TEXT NOT NULL, space_id TEXT NOT NULL,
                     data TEXT NOT NULL, saved_at TEXT NOT NULL);
@@ -55,6 +58,25 @@ class Store:
             # Backfill existing databases without rewriting canonical event records.
             for row in con.execute("SELECT r.data,r.version FROM records r LEFT JOIN event_search s ON s.event_id=r.id WHERE r.kind='event' AND (s.event_id IS NULL OR CAST(s.version AS INTEGER)!=r.version)").fetchall():
                 self._index_event(con, json.loads(row["data"]), row["version"])
+
+    def find_message(self, sid, cid, *, client_id=None, message_id=None, con=None):
+        if con is None:
+            with self.connect() as own:
+                return self.find_message(sid, cid, client_id=client_id, message_id=message_id, con=own)
+        column, value = ("id", message_id) if message_id is not None else ("json_extract(data,'$.client_id')", client_id)
+        row = con.execute(f"SELECT data,version FROM records WHERE kind='message' AND space_id=? AND json_extract(data,'$.conversation_id')=? AND {column}=? LIMIT 1", (sid, cid, value)).fetchone()
+        return dict(json.loads(row['data']), version=row['version']) if row else None
+
+    def recent_messages_before(self, sid, cid, message_id, limit=6):
+        # Ingestion order excludes subsequent concurrent arrivals, even with equal clocks.
+        with self.connect() as con:
+            rows = con.execute("""SELECT data FROM records WHERE kind='message' AND space_id=?
+                AND json_extract(data,'$.conversation_id')=? AND rowid <
+                (SELECT rowid FROM records WHERE kind='message' AND space_id=? AND id=?)
+                AND NOT coalesce(json_extract(data,'$.fixture'),0)
+                AND coalesce(json_extract(data,'$.content'),'') != ''
+                ORDER BY rowid DESC LIMIT ?""", (sid, cid, sid, message_id, limit)).fetchall()
+        return [json.loads(row['data']) for row in reversed(rows)]
 
     @staticmethod
     def _terms(text):

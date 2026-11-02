@@ -15,7 +15,7 @@ from .context_protocol import query_dialogue
 from .diagnostics import job_diagnostic
 from .focus import select_messages, focus_prompt, validate_focus, cleanup_buffer
 from .conversation import ordered_messages
-from .engine import build_context, event_view, strength_curve
+from .engine import build_context, retrieve_events, event_view, strength_curve
 from .model import parse_json, ContextLimitError, OutputLimitError
 from .message_retention import cleanup_messages, content_hash, STATE_ID as RETENTION_STATE_ID
 from .maintenance_boundary import fingerprint, validate_boundary
@@ -24,7 +24,7 @@ from .monitoring import Monitoring
 from .embedding import Embeddings
 from .retrieval import shortlist, graph_pool
 from .maintenance import append_update, save_fragment, ensure_baseline, merge_events, split_event, audit
-from .schemas import ChatInput, ContextInput, ConversationInput, EventInput, MaintenanceInput, MaintenancePlan, MemoryConfig, MessageInput, ModelInput, PersonInput, ReinforceInput, SpaceInput, DEFAULT_MAINTENANCE_PROMPT, MergeInput, SplitInput, RecallFeedback, EvaluationInput
+from .schemas import ChatInput, RecallInput, ContextInput, ConversationInput, EventInput, MaintenanceInput, MaintenancePlan, MemoryConfig, MessageInput, ModelInput, PersonInput, ReinforceInput, SpaceInput, DEFAULT_MAINTENANCE_PROMPT, MergeInput, SplitInput, RecallFeedback, EvaluationInput
 from .seed import create_space, seed_demo
 from .store import Store, dt, iso, new_id, utcnow
 
@@ -174,11 +174,11 @@ class MemoryService:
                 raise HTTPException(422, "回复消息必须属于当前会话")
         cfg = self.config_for(sid)
         if body.client_id:
-            for existing in self.store.list("message", sid, con):
-                if existing.get("client_id") == body.client_id and existing["conversation_id"] == cid:
-                    if ((existing.get("content_sha256") != content_hash(body.content) if existing.get("content_cleared_at") else existing["content"] != body.content) or existing["role"] != body.role or existing.get("person_id") != sender or existing.get("in_reply_to") != body.in_reply_to or existing.get("mention_ids", []) != body.mention_ids):
-                        raise HTTPException(409, "同一 client_id 已用于不同的消息")
-                    return existing
+            existing = self.store.find_message(sid, cid, client_id=body.client_id, con=con)
+            if existing:
+                if ((existing.get("content_sha256") != content_hash(body.content) if existing.get("content_cleared_at") else existing["content"] != body.content) or existing["role"] != body.role or existing.get("person_id") != sender or existing.get("in_reply_to") != body.in_reply_to or existing.get("mention_ids", []) != body.mention_ids):
+                    raise HTTPException(409, "同一 client_id 已用于不同的消息")
+                return existing
         if cfg["focus_person_id"]:
             buffered = con.execute("SELECT count(*) FROM records WHERE kind='message' AND space_id=? AND json_extract(data,'$.retention')='buffer'", (sid,)).fetchone()[0]
             if buffered >= cfg["focus_buffer_limit"]:
@@ -191,7 +191,16 @@ class MemoryService:
                                     "fixture": False, "client_id": body.client_id}, sid, con=con)
 
 
+    async def retrieve(self, sid, body):
+        # Reject host context on the retrieval boundary, even for in-process callers.
+        body = RecallInput.model_validate(body.model_dump() if hasattr(body, 'model_dump') else body)
+        return await self._recall(sid, body, structured=True)
+
     async def recall(self, sid, body, search_only=False):
+        """Compatibility context facade; new integrations use retrieve + assemble_context."""
+        return await self._recall(sid, body, search_only=search_only)
+
+    async def _recall(self, sid, body, search_only=False, structured=False):
         started, strategy, measured_mode = time.perf_counter(), "hybrid_local", "local"
         try:
             config = self.config_for(sid)
@@ -203,7 +212,8 @@ class MemoryService:
                 self.store.get("person", pid, sid)
             config = dict(config, _interaction_ids=body.mention_ids + ([body.reply_to_person_id] if body.reply_to_person_id else []))
             at = dt(body.at or utcnow())
-            dialogue = query_dialogue(body.query, body.current_context if body.current_context is not None else [m.get("content", "") for m in body.recent_messages])
+            dialogue = ("\n".join([m.get("content", "") for m in body.recent_messages] + [body.query])[-20000:]
+                        if structured else query_dialogue(body.query, body.current_context if body.current_context is not None else [m.get("content", "") for m in body.recent_messages]))
             catalog = [e for e in self.store.event_catalog(sid) if not config["focus_person_id"] or config["focus_person_id"] in e["person_ids"]]
             expanded, warnings = {}, []
             timings, diagnostic = {}, {}
@@ -245,9 +255,15 @@ class MemoryService:
             matches = {eid: match for eid, match in matches.items() if any(e["id"] == eid and e["version"] == candidates[eid]["version"] for e in events)}
             pool_ms = (time.perf_counter() - graph_at) * 1000
             engine_config = dict(config, max_seeds=body.top_k) if search_only else config
-            result = build_context(events, body.person_id, dialogue, at, engine_config, body.mode, matches, entry_ids=set(ids),
-                                   rank_scores=diagnostic["fusion_scores"], search_only=search_only, current_context=body.current_context)
+            if structured:
+                result = retrieve_events(events, body.person_id, dialogue, at, engine_config, body.mode, matches,
+                                         entry_ids=set(ids), rank_scores=diagnostic["fusion_scores"], limit=body.limit)
+            else:
+                result = build_context(events, body.person_id, dialogue, at, engine_config, body.mode, matches, entry_ids=set(ids),
+                                       rank_scores=diagnostic["fusion_scores"], search_only=search_only, current_context=body.current_context)
             result["query"] = body.query
+            if structured:
+                result["retrieval_query"] = dialogue
             result["person_context"] = {"enabled": bool(config["focus_person_id"]), "focus_person_id": config["focus_person_id"], "interaction_ids": config["_interaction_ids"]}
             result["engine_elapsed_ms"] = result["elapsed_ms"]
             timings.update(result.pop("timings_ms"))
@@ -256,7 +272,7 @@ class MemoryService:
             strategy = "hybrid_embedding" if effective == "hybrid" else "hybrid_local"
             measured_mode = effective
             result["strategy"] = strategy
-            result.update(requested_mode=requested, effective_mode=effective, kind="search" if search_only else "context",
+            result.update(requested_mode=requested, effective_mode=effective, kind="retrieval" if structured else "search" if search_only else "context",
                           degraded=any(w["code"] != "query_truncated" for w in warnings), warnings=warnings, route_status=route_status)
             for warning in warnings:
                 if warning["code"] != "query_truncated":
@@ -299,12 +315,13 @@ class MemoryService:
             for stage, milliseconds in timings.items():
                 if stage != "total":
                     self.metrics.retrieval_stage.labels(stage).observe(milliseconds / 1000)
-            self.metrics.recalls.labels(strategy, "success" if (result.get("items") if search_only else result["selected"]) else "empty").inc()
-            for stage, count in (("candidates", len(ids)), ("selected", len(result["selected"])), ("omitted", len(result["omitted"]))):
+            self.metrics.recalls.labels(strategy, "success" if (result.get("items") if search_only or structured else result["selected"]) else "empty").inc()
+            for stage, count in (("candidates", len(ids)), ("selected", len(result.get("items", []) if structured else result["selected"])), ("omitted", len(result.get("omitted", [])))):
                 self.metrics.recall_events.labels(stage).observe(count)
-            self.metrics.context_chars.observe(result["context_chars"])
-            self.metrics.recall_fragments.observe(sum(len(x.get("fragments", [])) for x in result["selected"]))
-            self.metrics.partial_events.inc(sum(bool(x.get("partial")) for x in result["selected"]))
+            if not structured:
+                self.metrics.context_chars.observe(result["context_chars"])
+                self.metrics.recall_fragments.observe(sum(len(x.get("fragments", [])) for x in result["selected"]))
+                self.metrics.partial_events.inc(sum(bool(x.get("partial")) for x in result["selected"]))
             if search_only:
                 fields = ("id", "recall_id", "items", "requested_mode", "effective_mode", "degraded", "warnings", "route_status", "timings_ms", "elapsed_ms")
                 return {key: result[key] for key in fields}
@@ -1004,7 +1021,7 @@ class MemoryService:
 
     def recall_feedback(self, sid: str, rid: str, body: RecallFeedback):
         trace = self.store.get("recall", rid, sid)
-        selected = {item["event_id"] for item in trace.get("items", trace["selected"])}
+        selected = {item["event_id"] for item in trace.get("items", trace.get("selected", []))}
         useful, irrelevant, missed = map(set, (body.useful_ids, body.irrelevant_ids, body.missed_ids))
         if useful & irrelevant or missed & selected or not (useful | irrelevant) <= selected:
             raise HTTPException(422, "有用/无关项必须来自实际召回，漏召回项必须未被选中，分类不能重叠")
