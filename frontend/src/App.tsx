@@ -894,6 +894,7 @@ export default function App() {
                     {conversations.map(c=><option key={c.id} value={c.id}>{c.display_title || c.title} · {new Date(c.created_at).toLocaleString()}</option>)}
                   </select></label>
                   <span>显示当前会话的 {messages.length} 条消息 · 每 5 秒刷新</span>
+                  {stats?.message_cleanup?.last_run_at && <span>原文清理：累计 {stats.message_cleanup.total_cleaned ?? 0} 条 · 最近 {new Date(stats.message_cleanup.last_run_at).toLocaleString()} 清理 {stats.message_cleanup.last_cleaned ?? 0} 条</span>}
                 </div>
                 <div className="lab-grid">
                   <section className="panel chat-panel">
@@ -963,7 +964,7 @@ export default function App() {
                                 <span>规则回放</span>
                               )}
                             </div>
-                            <div className="message-bubble">{m.content}</div>
+                            <div className="message-bubble">{m.content_cleared_at ? "原文已按保留策略清理" : m.content}</div>
                             {isGroup && <button className="time-step" onClick={()=>setReplyId(m.id)}>回复这条</button>}
                             <div className="message-time">
                               {new Date(m.at).toLocaleTimeString("zh-CN", {
@@ -1218,9 +1219,16 @@ export default function App() {
                                     </button>
                                   </h4>
                                   <p className="event-excerpt">
-                                    {item.event.body.slice(0, 145)}
-                                    {item.event.body.length > 145 ? "…" : ""}
+                                    {(item.injected_body ?? item.event.body).slice(0, 145)}
+                                    {(item.injected_body ?? item.event.body).length > 145 ? "…" : ""}
                                   </p>
+                                  {item.fragments && <details>
+                                    <summary>{item.partial ? "部分回忆" : "完整回忆"} · {item.fragments.length}/{item.total_fragments} 个片段</summary>
+                                    {item.fragments.map(part => <div key={part.id}>
+                                      <small>原文字符 {part.start}–{part.end} · {part.reason}</small>
+                                      <p style={{ whiteSpace: "pre-wrap" }}>{part.text}</p>
+                                    </div>)}
+                                  </details>}
                                   <div className="anchor-chips">
                                     {item.reasons.slice(0, 2).map((r, i) => (
                                       <span key={i}>

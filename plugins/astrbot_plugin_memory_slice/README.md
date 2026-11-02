@@ -6,7 +6,7 @@
 
 要求 **AstrBot >= 4.24.0**，使用其内置 LLM/Agent 流程。该最低版本来自本轮临时内容块 API；不支持绕过版本限制安装到旧版。外接 Dify 等未触发标准请求钩子的执行器尚未适配。
 
-1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.1.zip`。
+1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.2.zip`。
 2. 如果使用手工安装，将 ZIP 中的 `astrbot_plugin_memory_slice` 文件夹放到 AstrBot 的 `data/plugins/` 下；在 AstrBot 的 Python 环境安装该目录的 `requirements.txt`，然后重载插件。
 3. 插件配置中选择已有聊天模型；留空时跟随当前会话。无需填写新的 API Key 或模型地址。
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
@@ -43,7 +43,10 @@
   "activation_threshold": 0.26,
   "max_seeds": 3,
   "max_depth": 3,
-  "context_char_budget": 8000,
+  "max_events": 8,
+  "context_char_budget": 18000,
+  "fragment_target_chars": 1500,
+  "fragment_max_chars": 3000,
   "maintenance_input_token_budget": 8000,
   "maintenance_forgetting_weight": 0.65,
   "focus_buffer_hours": 24,
@@ -136,7 +139,7 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 构建脚本先在本机执行 React 生产构建（首次自动执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
-默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.1.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
+默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.2.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 
 当前通过 25 项插件测试、113 项核心/HTTP 回归测试和 17 项前端工具测试。新增覆盖网页鉴权、同实例共享、只读配置、事件编辑、整理、端口释放及重启。插件测试使用真实共享核心、SQLite 和模拟 AstrBot 宿主，覆盖事件整理/召回、群聊筛选与隔离、重载、去重、超时取消、模型输出截断、临时注入、发送后记录、故障不阻断聊天及包内核心一致性。
 
@@ -162,3 +165,5 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 规则使用 `<memory-slice-rules version="1">…</memory-slice-rules>`；有记忆输出且当前上下文缺少本版完整规则时附带。上下文裁剪后可再次注入，不维护会话永久已读状态。规则占用上下文字符预算。标签检测不是安全认证，接入方应传递真实请求内容。
 
 AstrBot 插件从 ProviderRequest 传递当前可见文本，仍使用临时注入，不修改历史；后续框架裁剪或其他插件修改不在此快照内。状态命令为 `/记忆切片`，召回仅支持 local/hybrid；hybrid 可能增加聊天延迟，失败自动降级。
+
+已消费聊天原文默认在处理完成 30 天后由内嵌核心自动清理，事件记忆保留。可在内嵌前端「整理」设置中配置，或在高级记忆配置设置 `message_cleanup_enabled` 和 `processed_message_retention_days`。旧数据没有完成时间时从新版首次清理检查起算，不会升级后立即删除。

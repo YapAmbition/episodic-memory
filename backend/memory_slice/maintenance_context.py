@@ -129,7 +129,7 @@ def prepare(store, sid, originals, settings, config, at, prompt, limit=None, mes
     data = {"new_messages": chosen, "existing_events": [], "persons": [], "now": at.isoformat()}
     data.update(force_progress=force, has_more_messages=True, previous_dialogue=[])
     if originals:
-        previous = [m for m in store.list("message", sid) if m.get("processed") and m["conversation_id"] == originals[0]["conversation_id"] and dt(m["at"]) <= dt(originals[0]["at"])]
+        previous = [m for m in store.list("message", sid) if m.get("processed") and not m.get("content_cleared_at") and m["conversation_id"] == originals[0]["conversation_id"] and dt(m["at"]) <= dt(originals[0]["at"])]
         for m in sorted(previous, key=lambda m: m["at"])[-2:]:
             data["previous_dialogue"].append({"role": m["role"], "content": m["content"][-600:], "read_only": True, "possibly_truncated": True})
     def request():
@@ -149,7 +149,7 @@ def prepare(store, sid, originals, settings, config, at, prompt, limit=None, mes
             result = {key: message[key] for key in ("id", "conversation_id", "person_id", "role", "at")}
             result.update({key: message.get(key) for key in ("sender_id", "in_reply_to", "mention_ids", "focus_reason")})
             result.update(content=message["content"][start:end], fragment={"start": start, "end": end, "total": len(message["content"])})
-            if parent:
+            if parent and not parent.get("content_cleared_at"):
                 result["reply_context"] = {"id": parent["id"], "person_id": parent.get("person_id"), "role": parent["role"],
                                            "content": parent["content"][:2000], "read_only": True,
                                            "truncated": len(parent["content"]) > 2000}

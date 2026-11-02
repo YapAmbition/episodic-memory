@@ -11,6 +11,8 @@ export type Conversation = {
 };
 export type Message = {
   processed?: boolean;
+  processed_at?: string;
+  content_cleared_at?: string;
   person_id?: string; sender_id?: string | null; in_reply_to?: string | null; mention_ids?: string[]; retention?: string;
   id: string;
   role: "user" | "assistant";
@@ -71,6 +73,10 @@ export type Candidate = {
   semantic_match?: { score: number; view: string; evidence: string } | null;
 };
 export type Selected = {
+  partial?: boolean;
+  injected_body?: string;
+  total_fragments?: number;
+  fragments?: { id: string; start: number; end: number; text: string; reason: string }[];
   event_id: string;
   score: number;
   depth: number;
@@ -159,6 +165,7 @@ export type Stats = {
   active: number;
   dormant: number;
   links: number;
+  message_cleanup?: { last_run_at?: string; last_cleaned?: number; total_cleaned?: number; pending_cleanup?: number } | null;
   pending_messages: number;
   last_job: Job | null;
 };
@@ -182,11 +189,15 @@ export type Config = {
   max_seeds: number;
   max_events: number;
   context_char_budget: number;
+  fragment_target_chars: number;
+  fragment_max_chars: number;
   backlinks: boolean;
   retrieval_limit: number;
   graph_candidate_limit: number;
   model_catalog_char_budget: number;
   auto_reinforcement_enabled: boolean;
+  message_cleanup_enabled: boolean;
+  processed_message_retention_days: number;
   maintenance_batch_chars: number;
   maintenance_input_token_budget: number;
   maintenance_pending_token_limit: number;

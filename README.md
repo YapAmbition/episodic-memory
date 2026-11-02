@@ -282,3 +282,25 @@ Codex 同步从首次启用时刻开始，不自动导入此前历史；页面�
 `maintenance_pending_token_limit` 默认 4000（UTF-8 估算 token，可在记忆设置修改）。达到此阈值，或输入预算无法容纳全部待处理消息时，核心要求处理本批全部消息：保存已知阶段性事实，或说明原因并跳过没有可理解信息的内容；不虚构结局，不物理删除聊天。模型未遵守、输出截断或请求失败时保留原文并安全暂停，原有每轮最多 8 次调用限制继续生效。
 
 任务接口新增 `waiting_for_context`、`waiting_reason`、`processed_through_message_id`、`force_progress`、`ignored_messages`。等待任务状态为 completed（本轮已结束，但尾部仍未处理），异常暂停仍为 deferred/failed。监控新增 `memory_maintenance_decisions_total{mode="normal|waiting|forced"}`，按成功提交的批次计数；前端展示等待、跳过原因和容量触发推进情况。
+
+### 已消费聊天原文的定期清理
+
+核心默认开启 `message_cleanup_enabled=true`，`processed_message_retention_days=30`；在「记忆设置 → 整理」可以关闭或调整保留天数。以成功处理完成时的真实 `processed_at` 起算，和实验时间无关；缺少此字段的旧记录从首次启用清理开始获得完整保留期。后台每天检查一次，每批最多 500 条，积压分批继续；服务停止时不运行，下次启动补做检查。关闭自动整理不会关闭原文清理。
+
+只清空已消费消息的 `content`，保留消息身份、处理状态、内容 SHA-256、原长度和 `content_cleared_at`，重复同步相同消息不会恢复正文或重新整理。未完成消息、待整理消息显式回复的原文及最早待整理片段之前的两条已处理消息受到保护；有排队或运行中的整理任务时推迟清理。事件正文、事件历史及关联不修改；事件来源 ID 仍可定位到显示「原文已按保留策略清理」的记录。
+
+空间 `/stats` 的 `message_cleanup` 返回最近执行时间、最近/累计清理数、累计清理字符数和积压数；Prometheus 指标 `memory_consumed_message_bodies_cleaned_total` 为本进程累计清理数。删除正文后不能在本系统用原文重新整理；事件中引用的原话、已有备份不属于本功能的删除范围。SQLite 释放的页可供后续写入复用，数据库文件不保证立即缩小。
+
+### 召回上下文预算
+
+`max_events`（默认 8）限制本轮注入事件总数，包括关联事件；`context_char_budget`（默认 18000）限制完整上下文的字符数。两项均可配置。先去除上下文中已有的同版记忆，再按召回综合评分排序；长事件按片段选择，超限时从低相关片段候选开始移除，直到同时满足两项限制；必要背景与更正依赖组一并保留或移除。规则说明、标签、来源、分隔符及正文都计入预算，不截断事件。一件事件单独仍超限时返回空上下文，并在 `omitted` 中记录原因。
+
+字符数使用 Python `len` 按 Unicode 码点精确计数，不是字节数或 token 估算。接口返回 `context_chars`，监控提供 `memory_context_characters`。不包含宿主另外添加的提示词。两种唤醒模式及 AstrBot 均使用核心限制；AstrBot 在 `memory_options` 中配置上述参数。
+
+### 长事件的部分回忆
+
+`fragment_target_chars` 默认 1500，`fragment_max_chars` 默认 3000，目标不得超过硬上限。先按 Markdown 阶段标题划分，再找段落、句子或换行边界，最后才按字符切开。所有片段可按原顺序无损拼回正文；原始事件不修改。片段是按正文派生的视图，无需重新调用模型整理旧事件。标识由原文起点和内容哈希生成，与召回剩余预算无关；修改正文或分片参数后部分标识会变化。
+
+召回先定位事件，再按当前问题与片段文本的程序相似度排序，暂未利用 embedding 对事件内部片段再次打分。选中片段同时带上事件首段、所在阶段首段、必要前段，以及识别到的更正阶段。更正识别使用规则，不保证识别所有隐含依赖；必要依赖放不下时不输出孤立片段。短事件仍完整注入，同一事件多个片段计一件。
+
+协议规则升级为 v2，部分记忆带 `partial="true"` 和 `parts` 标识，按事件、版本及片段去重。同版片段可以跨轮补充；新版本优先且重新召回，不把部分记忆当完整替换。前端召回卡展示实际片段和原文位置；接口 selected 中增加 partial、injected_body、total_fragments、fragments。监控新增 memory_recall_fragments 与 memory_recall_partial_events_total。

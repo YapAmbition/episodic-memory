@@ -19,7 +19,7 @@ def archive(path, files):
             z.writestr(entry, data)
 
 
-def build(output, version='0.2.6', build_frontend=True):
+def build(output, version='0.2.7', build_frontend=True):
     from build_astrbot_plugin import frontend_sources
     import re
     if not re.fullmatch(r'\d+\.\d+\.\d+', version):
@@ -73,7 +73,7 @@ def build(output, version='0.2.6', build_frontend=True):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', type=Path, default=ROOT/'dist/skill-local')
-    parser.add_argument('--version', default='0.2.6')
+    parser.add_argument('--version', default='0.2.7')
     parser.add_argument('--skip-frontend-build', action='store_true')
     args = parser.parse_args()
     for path in build(args.output, args.version, not args.skip_frontend_build):

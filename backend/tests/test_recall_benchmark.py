@@ -47,7 +47,8 @@ class BenchmarkAPITests(unittest.TestCase):
             time.sleep(.01)
         self.assertEqual(job['status'], 'completed', job.get('error'))
         self.assertEqual(len(job['report']['results']), 28)
-        self.assertIsNotNone(job['report']['baseline'])
+        # Old baseline has no fragment configuration; comparing it would mix budgets.
+        self.assertIsNone(job['report']['baseline'])
         self.assertFalse(any(r['regressed'] for r in job['report']['results']))
         self.assertEqual(self.client.get(self.prefix+'/events').json(), before)
         self.assertEqual(len(self.client.get('/api/v1/spaces').json()), 1)

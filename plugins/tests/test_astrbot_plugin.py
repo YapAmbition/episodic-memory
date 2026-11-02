@@ -7,6 +7,7 @@ import time
 import types
 import unittest
 import zipfile
+import shutil
 import httpx
 from pathlib import Path
 
@@ -15,9 +16,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from build_astrbot_plugin import build
 
 PACKAGE = tempfile.TemporaryDirectory()
-archive = build(Path(PACKAGE.name) / "plugin.zip", build_frontend=False)
-with zipfile.ZipFile(archive) as z:
-    z.extractall(PACKAGE.name)
+# Runtime tests load isolated source copies; packaging is a separate explicit test.
+package_root = Path(PACKAGE.name) / "astrbot_plugin_memory_slice"
+shutil.copytree(ROOT / "plugins/astrbot_plugin_memory_slice", package_root,
+                ignore=shutil.ignore_patterns("__pycache__"))
+shutil.copytree(ROOT / "backend/memory_slice", package_root / "memory_slice",
+                ignore=shutil.ignore_patterns("__pycache__"))
+(package_root / "__init__.py").touch()
 sys.path.insert(0, PACKAGE.name)
 from astrbot_plugin_memory_slice.runtime import Runtime
 from astrbot_plugin_memory_slice.adapter import AstrBotModelAdapter
@@ -159,6 +164,19 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(
             self.runtime.core.config_for(record["space_id"])["focus_person_id"]
         )
+
+    async def test_context_budget_options_reach_core(self):
+        await self.reset(memory_options=json.dumps({"max_events": 2, "context_char_budget": 1000}))
+        event = Event()
+        record = await self.runtime.ingest(event)
+        await self.finished(await self.runtime.maintain(event), record["space_id"])
+        config = self.runtime.core.config_for(record["space_id"])
+        self.assertEqual(config["max_events"], 2)
+        self.assertEqual(config["context_char_budget"], 1000)
+        text = await self.runtime.recall(Event("陨石一号怎么样了", mid="2"))
+        self.assertLessEqual(len(text), 1000)
+        if text:
+            self.assertTrue(text.endswith("</memory-slice>"))
 
     async def test_hybrid_provider_failure_still_injects_local_memory(self):
         await self.reset(retrieval_mode="hybrid", embedding_enabled=True,
@@ -549,6 +567,7 @@ class PackagingTests(unittest.TestCase):
     def test_core_is_exact_and_archive_excludes_service_data_and_dependencies(self):
         import hashlib
 
+        archive = build(Path(PACKAGE.name) / "plugin.zip", build_frontend=False)
         with zipfile.ZipFile(archive) as z:
             prefix = "astrbot_plugin_memory_slice/"
             manifest = json.loads(z.read(prefix + "core-manifest.json"))

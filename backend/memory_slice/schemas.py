@@ -48,11 +48,22 @@ class MemoryConfig(StrictModel):
     max_seeds: int = Field(3, ge=1, le=12)
     max_events: int = Field(8, ge=1, le=30)
     context_char_budget: int = Field(18000, ge=1000, le=100000)
+    fragment_target_chars: int = Field(1500, ge=200, le=10000)
+    fragment_max_chars: int = Field(3000, ge=200, le=20000)
+
+    @model_validator(mode="after")
+    def fragment_limits(self):
+        if self.fragment_target_chars > self.fragment_max_chars:
+            raise ValueError("片段目标大小不能超过片段硬上限")
+        return self
+
     backlinks: bool = True
     retrieval_limit: int = Field(40, ge=12, le=120)
     graph_candidate_limit: int = Field(200, ge=120, le=2000)
     model_catalog_char_budget: int = Field(48000, ge=8000, le=180000)
     auto_reinforcement_enabled: bool = True
+    message_cleanup_enabled: bool = True
+    processed_message_retention_days: int = Field(30, ge=1, le=3650)
     maintenance_batch_chars: int = Field(32000, ge=20000, le=100000)
     maintenance_input_token_budget: int = Field(8000, ge=1024, le=1000000)
     maintenance_pending_token_limit: int = Field(4000, ge=512, le=1000000)

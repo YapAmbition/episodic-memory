@@ -250,6 +250,8 @@ def create_app(
                     baseline = json.loads(baseline_file.read_text()) if baseline_file.exists() else None
                     if baseline:
                         baseline.get("config", {}).setdefault("maintenance_pending_token_limit", 4000)
+                        baseline.get("config", {}).setdefault("message_cleanup_enabled", True)
+                        baseline.get("config", {}).setdefault("processed_message_retention_days", 30)
                     compatible = baseline and all(baseline.get(k) == report.get(k) for k in ("dataset_sha256", "config", "k"))
                     report["baseline"] = baseline["summaries"]["local"] if compatible else None
                     previous = {r["id"]: r for r in baseline["results"]} if compatible else {}

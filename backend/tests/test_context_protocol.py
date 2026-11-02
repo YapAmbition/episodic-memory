@@ -28,7 +28,7 @@ class ContextProtocolTests(unittest.TestCase):
         self.assertEqual(self.recall([changed], [old, new])['context'], '')
 
     def test_rules_upgrade_and_malformed_blocks(self):
-        for context in [RULES.replace('version="1"', 'version="0"'), '<memory-slice-rules version="1">',
+        for context in [RULES.replace('version="2"', 'version="1"'), '<memory-slice-rules version="1">',
                         '<memory-slice id="e1" revision="1">partial',
                         '<memory-slice id="e1" revision="bad">x</memory-slice>',
                         '<memory-slice id="e1" revision="1"></memory-slice>']:

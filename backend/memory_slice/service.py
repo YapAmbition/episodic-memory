@@ -17,6 +17,7 @@ from .focus import select_messages, focus_prompt, validate_focus, cleanup_buffer
 from .conversation import ordered_messages
 from .engine import build_context, event_view, strength_curve
 from .model import parse_json, ContextLimitError, OutputLimitError
+from .message_retention import cleanup_messages, content_hash, STATE_ID as RETENTION_STATE_ID
 from .maintenance_boundary import fingerprint, validate_boundary
 from .maintenance_context import prepare as prepare_maintenance, supplement as supplement_maintenance, budget_for
 from .monitoring import Monitoring
@@ -175,7 +176,7 @@ class MemoryService:
         if body.client_id:
             for existing in self.store.list("message", sid, con):
                 if existing.get("client_id") == body.client_id and existing["conversation_id"] == cid:
-                    if (existing["content"] != body.content or existing["role"] != body.role or existing.get("person_id") != sender or existing.get("in_reply_to") != body.in_reply_to or existing.get("mention_ids", []) != body.mention_ids):
+                    if ((existing.get("content_sha256") != content_hash(body.content) if existing.get("content_cleared_at") else existing["content"] != body.content) or existing["role"] != body.role or existing.get("person_id") != sender or existing.get("in_reply_to") != body.in_reply_to or existing.get("mention_ids", []) != body.mention_ids):
                         raise HTTPException(409, "同一 client_id 已用于不同的消息")
                     return existing
         if cfg["focus_person_id"]:
@@ -302,6 +303,8 @@ class MemoryService:
             for stage, count in (("candidates", len(ids)), ("selected", len(result["selected"])), ("omitted", len(result["omitted"]))):
                 self.metrics.recall_events.labels(stage).observe(count)
             self.metrics.context_chars.observe(result["context_chars"])
+            self.metrics.recall_fragments.observe(sum(len(x.get("fragments", [])) for x in result["selected"]))
+            self.metrics.partial_events.inc(sum(bool(x.get("partial")) for x in result["selected"]))
             if search_only:
                 fields = ("id", "recall_id", "items", "requested_mode", "effective_mode", "degraded", "warnings", "route_status", "timings_ms", "elapsed_ms")
                 return {key: result[key] for key in fields}
@@ -619,6 +622,8 @@ class MemoryService:
                                 original["expires_at"] = None
                             original["maintenance_offset"] = message["fragment"]["end"]
                             original["processed"] = original["maintenance_offset"] == len(original["content"])
+                            if original["processed"]:
+                                original["processed_at"] = iso()
                             completed_messages += int(original["processed"])
                             self.store.put("message", original, sid, con=con)
                     for ignored in plan.ignored_messages:
@@ -710,6 +715,10 @@ class MemoryService:
                 for space in self.store.list("space"):
                     sid = space["id"]
                     cfg = self.config_for(sid)
+                    if not any(lock.locked() for lock in self.chat_locks.values()):
+                        cleanup = cleanup_messages(self.store, sid, cfg)
+                        if cleanup:
+                            self.metrics.cleaned_messages.inc(cleanup["last_cleaned"])
                     self.metrics.focus_messages.labels("expired").inc(cleanup_buffer(self.store, sid, cfg))
                     if not cfg["schedule_enabled"]:
                         continue
@@ -871,7 +880,7 @@ class MemoryService:
                 return {"user": user, "assistant": prior_reply, "recall": trace}
             transcript = self.messages(sid, cid)
             current_index = next(index for index, message in enumerate(transcript) if message["id"] == user["id"])
-            history = transcript[:current_index]
+            history = [m for m in transcript[:current_index] if not m.get("content_cleared_at")]
             def turn(message):
                 content = message["content"]
                 if conversation.get("kind") == "group" and message["role"] == "user":
@@ -1074,6 +1083,7 @@ class MemoryService:
         return {"events": len(all_events), "active": sum(e["memory_status"] == "active" for e in all_events),
                 "dormant": sum(e["memory_status"] == "dormant" for e in all_events),
                 "links": sum(len(e["links"]) for e in all_events),
+                "message_cleanup": next((r for r in self.store.list("integration", sid) if r["id"] == RETENTION_STATE_ID + ":" + sid), None),
                 "pending_messages": sum(not m.get("processed") and not m.get("fixture") for m in self.store.list("message", sid)),
                 "last_job": self.jobs(sid, "maintenance")[0] if self.jobs(sid, "maintenance") else None}
 

@@ -86,7 +86,7 @@
   "memory_options": {
     "type": "text",
     "default": "{}",
-    "description": "高级记忆参数 JSON：可配置淡忘、召回、整理预算等；见 README",
+    "description": "高级记忆参数 JSON：max_events 控制返回条数，context_char_budget 控制上下文字符上限（默认 18000）；fragment_target_chars/fragment_max_chars 控制片段目标/上限；见 README",
     "editor_mode": true,
     "editor_language": "json"
   },

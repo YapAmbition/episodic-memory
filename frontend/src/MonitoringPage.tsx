@@ -443,6 +443,8 @@ export function MonitoringPage({
         stage: "selected",
       }),
       context: histogram(snapshot, "memory_context_characters"),
+      fragments: histogram(snapshot, "memory_recall_fragments"),
+      partialEvents: metric(snapshot, "memory_recall_partial_events_total"),
       jobLatency: histogram(snapshot, "memory_maintenance_duration_seconds"),
       queueLatency: histogram(
         snapshot,
@@ -733,6 +735,10 @@ export function MonitoringPage({
                       : count(view.context.average)}
                     <small>字符 / 次</small>
                   </b>
+                </div>
+                <div>
+                  <span>平均注入片段 / 累计部分回忆</span>
+                  <b>{view.fragments.average?.toFixed(1) ?? "—"} / {count(view.partialEvents)}</b>
                 </div>
                 <div>
                   <span>平均召回耗时</span>

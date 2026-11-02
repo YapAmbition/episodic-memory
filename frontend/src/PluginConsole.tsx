@@ -13,7 +13,9 @@ export function PluginConfiguration({config}: {config: Config}) {
       <article><small>召回方式</small><strong>{config.default_retrieval_mode === "hybrid" ? "语义增强召回" : "程序多路召回"}</strong></article>
       <article><small>自动整理</small><strong>{config.schedule_enabled ? `每 ${config.schedule_interval_minutes} 分钟` : "已暂停"}</strong></article>
       <article><small>基础半衰期</small><strong>{config.half_life_days} 天</strong></article>
-      <article><small>上下文字符预算</small><strong>{config.context_char_budget.toLocaleString()}</strong></article>
+      <article><small>上下文字符上限</small><strong>{config.context_char_budget.toLocaleString()}</strong></article>
+      <article><small>上下文事件上限</small><strong>{config.max_events} 件</strong></article>
+      <article><small>片段目标 / 硬上限</small><strong>{config.fragment_target_chars} / {config.fragment_max_chars} 字符</strong></article>
       <article><small>关联展开深度</small><strong>{config.max_depth} 层</strong></article>
     </div>
     <details className="plugin-config-details"><summary>查看完整生效配置</summary><pre>{JSON.stringify(config,null,2)}</pre></details>

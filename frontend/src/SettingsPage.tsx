@@ -170,13 +170,15 @@ const graphFields: SliderDef[] = [
   },
   {
     key: "context_char_budget",
-    label: "上下文字符预算",
-    description: "预算不足时跳过整件事件，并在召回结果中报告；保留完整正文。",
+    label: "上下文字符上限",
+    description: "默认 18,000 字符，包含规则、标签与正文；长事件按片段召回，超限时移除低相关片段，必要背景与更正一并保留或移除。",
     min: 1000,
     max: 100000,
     step: 1000,
     suffix: "字符",
   },
+  { key: "fragment_target_chars", label: "片段目标大小", description: "优先按阶段、段落、句子分片；不得大于硬上限。", min: 200, max: 10000, step: 100, suffix: "字符" },
+  { key: "fragment_max_chars", label: "片段硬上限", description: "超长段落最终按字符边界拆分，原文完整保留；修改后片段标识可能变化。", min: 200, max: 20000, step: 100, suffix: "字符" },
 ];
 
 export function SettingsPage({
@@ -481,6 +483,8 @@ export function SettingsPage({
               <Clock3 size={20} />
             </div>
             <div className="maintenance-budget-intro"><Sparkles size={21} /><div><strong>{model.context_window_tokens ? `已配置上下文 ${model.context_window_tokens.toLocaleString()} token` : "模型容量未知 · 使用保守预算"}</strong><p>当前输入上限 {Math.max(0, maintenanceInputLimit(draft, model)).toLocaleString()} token；统一计入提示词、新对话、旧事材料和人物资料。按 UTF-8 保守估算，首次请求仍可能超限。容量与输出预留可在<button className="text-button" onClick={() => setTab("model")}>模型连接</button>中设置。</p></div></div>
+            <div className="settings-section-heading"><div><h3>已消费聊天原文清理</h3><p>每天检查，按处理完成时间计算；仅清理正文，保留事件与消息标识。旧记录从首次启用开始计算，未完成消息及必要上下文受到保护。</p></div><button className={`switch ${draft.message_cleanup_enabled ? "on" : ""}`} role="switch" aria-label="自动清理已消费聊天原文" aria-checked={draft.message_cleanup_enabled} onClick={() => setDraft(d => ({...d, message_cleanup_enabled: !d.message_cleanup_enabled}))}><span /></button></div>
+            {field({ key: "processed_message_retention_days", label: "已消费原文保留天数", description: "清理后无法回看原话或用原文重新整理；不影响已生成事件的召回。", min: 1, max: 3650, step: 1, suffix: "天" })}
             {field({ key: "maintenance_input_token_budget", label: "整理输入预算", description: "容量未知时使用此预算；已配置容量时，还会扣除输出和安全预留。", min: 1024, max: 128000, step: 64, suffix: "token" })}
             {field({ key: "maintenance_pending_token_limit", label: "待整理内容上限", description: "按估算 token 计；达到上限或本批输入容量时，必须记录阶段性事实或明确跳过，不再无限等待。", min: 512, max: 128000, step: 256, suffix: "token" })}
             {field({ key: "maintenance_safety_tokens", label: "安全余量", description: "已配置上下文容量时额外预留，补偿估算与提供方包装差异。", min: 128, max: 8192, step: 128, suffix: "token" })}
