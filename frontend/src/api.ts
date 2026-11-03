@@ -57,14 +57,14 @@ export const put = <T>(path: string, body: unknown) =>
   api<T>(path, { method: "PUT", body: JSON.stringify(body) });
 export async function downloadMemory(spaceId: string) {
   const token = serviceToken();
-  const r = await fetch(`/api/v1/spaces/${spaceId}/export`, {
+  const r = await fetch(`/api/v1/spaces/${spaceId}/transfer`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!r.ok) throw new Error("导出失败，请检查服务连接");
   const url = URL.createObjectURL(await r.blob());
   const a = document.createElement("a");
   a.href = url;
-  a.download = "memory-slice.zip";
+  a.download = "memory-slice-transfer.json";
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 500);
 }

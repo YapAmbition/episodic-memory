@@ -38,9 +38,9 @@ def build(output, version='0.2.7', build_frontend=True):
         stamp.write_text(json.dumps(frontend_sources(), sort_keys=True))
     if not stamp.exists() or json.loads(stamp.read_text()) != frontend_sources():
         raise RuntimeError('前端构建不存在或已过期，请重新构建')
-    files = {}
-    for path in (ROOT/'backend/memory_slice').glob('*.py'):
-        files['backend/memory_slice/'+path.name] = path.read_bytes()
+    files = {'scripts/restore_memory_backup.py': (ROOT/'scripts/restore_memory_backup.py').read_bytes()}
+    for path in (ROOT/'backend/memory_slice').rglob('*.py'):
+        files['backend/memory_slice/'+path.relative_to(ROOT/'backend/memory_slice').as_posix()] = path.read_bytes()
     for path in (ROOT/'evals/recall').rglob('*.json'):
         files['backend/memory_slice/benchmark_data/'+path.relative_to(ROOT/'evals/recall').as_posix()] = path.read_bytes()
     for path in (frontend/'dist').rglob('*'):

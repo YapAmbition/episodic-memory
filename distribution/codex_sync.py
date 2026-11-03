@@ -105,10 +105,24 @@ class HistorySync:
             self.save()
 
 
+    def follow_space_merge(self):
+        # The merger moves persisted cursors with the conversation records. Keep the
+        # live reader's cursor state, changing only its destination before writes.
+        redirects = {r['id']: r['target_space_id'] for r in self.store.list('merged_space')}
+        visited = set()
+        while self.state.get('space_id') in redirects:
+            sid = self.state['space_id']
+            if sid in visited:
+                raise RpcError('空间合并路径异常')
+            visited.add(sid)
+            self.state['space_id'] = redirects[sid]
+
     def save(self):
+        self.follow_space_merge()
         self.store.put('integration', self.state, '')
 
     def status(self):
+        self.follow_space_merge()
         return {k:v for k,v in self.state.items() if k not in ('threads','list_cursor','version')} | {
             'running':self.lock.locked(), 'pending_turns':sum(len(t.get('pending',[])) for t in self.state['threads'].values()),
             'tracked_threads':len(self.state['threads']), 'interval_seconds':15,
@@ -161,6 +175,7 @@ class HistorySync:
         return self.status()
 
     def conversation(self, tid, state):
+        self.follow_space_merge()
         sid = self.state['space_id']
         if state.get('cid'):
             return state['cid']
@@ -238,6 +253,7 @@ class HistorySync:
         params={'threadId':tid,'turnId':job['id'],'limit':10,'sortDirection':'asc'}
         if job.get('cursor'):params['cursor']=job['cursor']
         page=await self.reader.call('thread/items/list',params)
+        self.follow_space_merge()
         sid=self.state['space_id']
         for entry in page['data']:
             item=entry['item']

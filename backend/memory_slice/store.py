@@ -37,6 +37,8 @@ class Store:
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / "memory.sqlite3"
         with self.connect() as con:
+            from .migrations import prepare, migrate
+            prepare(con, self.path)
             con.executescript("""
                 PRAGMA journal_mode=WAL;
                 CREATE TABLE IF NOT EXISTS records (
@@ -44,6 +46,7 @@ class Store:
                     data TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY(kind,id));
                 CREATE INDEX IF NOT EXISTS records_scope ON records(kind,space_id);
+                CREATE INDEX IF NOT EXISTS records_by_space ON records(space_id);
                 CREATE INDEX IF NOT EXISTS message_retention_lookup ON records(kind,space_id,json_extract(data,'$.retention'));
                 CREATE INDEX IF NOT EXISTS message_client_lookup ON records(kind,space_id,json_extract(data,'$.conversation_id'),json_extract(data,'$.client_id'));
                 CREATE INDEX IF NOT EXISTS message_conversation_lookup ON records(kind,space_id,json_extract(data,'$.conversation_id'));
@@ -55,6 +58,7 @@ class Store:
                     event_id UNINDEXED, space_id UNINDEXED, version UNINDEXED,
                     title, body, anchors, structure, tokenize='unicode61');
             """)
+            migrate(con)
             # Backfill existing databases without rewriting canonical event records.
             for row in con.execute("SELECT r.data,r.version FROM records r LEFT JOIN event_search s ON s.event_id=r.id WHERE r.kind='event' AND (s.event_id IS NULL OR CAST(s.version AS INTEGER)!=r.version)").fetchall():
                 self._index_event(con, json.loads(row["data"]), row["version"])
@@ -114,6 +118,10 @@ class Store:
             with self.connect() as own:
                 return self.get(kind, item_id, space_id, own)
         row = con.execute("SELECT data,version,space_id FROM records WHERE kind=? AND id=?", (kind, item_id)).fetchone()
+        if not row and kind == "space":
+            merged = con.execute("SELECT data FROM records WHERE kind='merged_space' AND id=?", (item_id,)).fetchone()
+            if merged:
+                raise HTTPException(409, "此空间已合并，请切换到目标空间：" + json.loads(merged['data'])['target_space_id'])
         if not row or (space_id is not None and row["space_id"] != space_id):
             raise HTTPException(404, "记录不存在或不属于此记忆空间")
         result = json.loads(row["data"])
@@ -137,7 +145,15 @@ class Store:
         item = dict(item)
         item.pop("version", None)
         space_id = space_id or item.get("space_id") or item["id"]
+        merged = con.execute("SELECT data FROM records WHERE kind='merged_space' AND id=?", (space_id,)).fetchone()
+        if merged:
+            raise HTTPException(409, "此空间已合并，请切换到目标空间：" + json.loads(merged['data'])['target_space_id'])
         old = con.execute("SELECT data,version FROM records WHERE kind=? AND id=?", (kind, item["id"])).fetchone()
+        if kind in ("event", "person", "conversation", "message"):
+            origin = json.loads(old["data"]).get("origin_id", item["id"]) if old else item.get("origin_id", item["id"])
+            if old and item.get("origin_id", origin) != origin:
+                raise HTTPException(409, "记录的来源 ID 不可修改")
+            item["origin_id"] = origin
         if expected is not None and (not old or old["version"] != expected):
             raise HTTPException(409, "此记录已被更新，请刷新后重试")
         if kind == "event" and old:
@@ -145,7 +161,7 @@ class Store:
             if bool(previous.get("frozen")) != bool(item.get("frozen")) and not allow_freeze_change:
                 raise HTTPException(409, "请通过冻结接口改变冻结状态")
             if previous.get("frozen"):
-                mutable = {"version", "updated_at", "reinforcements", "frozen"}
+                mutable = {"version", "updated_at", "reinforcements", "frozen", "origin_id"}
                 if any(previous.get(k) != item.get(k) for k in (previous.keys() | item.keys()) - mutable):
                     raise HTTPException(409, "事件已冻结，请先解冻再修改")
         if kind == "event" and old:

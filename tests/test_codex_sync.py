@@ -45,6 +45,27 @@ class SyncTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.sync.close();await self.core.close();self.temp.cleanup()
     def messages(self):return self.core.store.list('message',self.sid)
+    async def test_space_copy_preserves_source_cursor_and_independent_target(self):
+        from memory_slice.space_copy import SpaceCopier, CopyInput
+        await self.sync.cycle()
+        target=self.core.add_space(SpaceInput(name='目标'))['id']
+        copier=SpaceCopier(self.core)
+        preview=copier.preview(self.sid,CopyInput(target_space_id=target))
+        copier.copy(self.sid,CopyInput(target_space_id=target,preview_token=preview['preview_token']))
+        self.assertEqual(self.sync.status()['space_id'],self.sid)
+        restored=HistorySync(self.core,self.reader)
+        self.assertEqual(restored.state['space_id'],self.sid)
+        self.assertEqual(restored.state['since'],100.5)
+        copied=self.core.store.list('message',target)[0]
+        self.assertNotEqual(copied['id'],self.messages()[0]['id'])
+        self.assertNotIn('external_thread_id',self.core.store.list('conversation',target)[0])
+        self.reader.threads[0]['updatedAt']=220
+        self.reader.turns.insert(0,{'id':'turn2','status':'completed','startedAt':110,'completedAt':112})
+        self.reader.items['turn2']=[entry('next',111)]
+        await self.sync.cycle()
+        self.assertEqual(len(self.core.store.list('message',target)),1)
+        self.assertEqual(len(self.messages()),2)
+
     async def test_boundary_old_thread_continuation_and_types(self):
         self.reader.items['turn']=[entry('old',99),entry('same-second',100.6),entry('think',101,'reasoning'),entry('progress',101,'agentMessage',phase='commentary'),entry('answer',102,'agentMessage',phase='final_answer')]
         await self.sync.cycle()

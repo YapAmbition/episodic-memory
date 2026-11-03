@@ -1,3 +1,4 @@
+import { SpaceMerge } from "./SpaceMerge";
 import { GraphPage } from "./GraphPage";
 import { maintenanceStatusLabel } from "./maintenanceUi";
 import { CodexSyncPanel } from "./CodexSyncPanel";
@@ -77,11 +78,12 @@ import {
 } from "./retrievalUi";
 import "./retrieval.css";
 
-type Page = "lab" | "events" | "graph" | "settings" | "monitoring" | "benchmark" | "api";
+type Page = "merge" | "lab" | "events" | "graph" | "settings" | "monitoring" | "benchmark" | "api";
 const pages = [
   { id: "lab", label: "对话实验室", icon: MessageCircle },
   { id: "events", label: "事件记忆", icon: BookOpen },
   { id: "graph", label: "关联网络", icon: Network },
+  { id: "merge", label: "复制到其他空间", icon: Network },
   { id: "settings", label: "记忆设置", icon: Settings2 },
   { id: "monitoring", label: "运行监控", icon: Activity },
   { id: "benchmark", label: "召回测试", icon: FlaskConical },
@@ -745,6 +747,7 @@ export default function App() {
           </div>
         ) : (
           <div className="page-content">
+            {page === "merge" && <SpaceMerge spaces={spaces} onMerged={async(target)=>{await bootstrap();switchSpace(target)}} />}
             {page === "benchmark" && <RecallBenchmark sid={sid} />}
             {page === "lab" && managed && spaces.find(s => s.id === sid) && <PluginConsole key={sid} space={spaces.find(s => s.id === sid)!} stats={stats} onMaintain={maintain} onJobs={() => setShowJobs(true)} busy={jobs.some(j => ["queued", "running"].includes(j.status))} />}
             {page === "lab" && !managed && (

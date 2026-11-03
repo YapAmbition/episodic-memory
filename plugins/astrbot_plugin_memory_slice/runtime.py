@@ -11,6 +11,7 @@ import time
 from datetime import datetime, timezone
 from .adapter import AstrBotModelAdapter
 from .pinned import PinnedMemories
+from .memory_slice.integrations.routing import ChatRouting
 from .memory_slice.service import MemoryService
 from .memory_slice.context_protocol import text_parts
 from .memory_slice.context_assembly import assemble_context
@@ -43,8 +44,6 @@ class Runtime:
         self.provider = AstrBotModelAdapter(
             context, str(config.get("provider_id", "")).strip()
         )
-        self.core = MemoryService(directory, model=self.provider)
-        self.pins = PinnedMemories(self)
         self.lock = asyncio.Lock()
         self.closed = False
         options = config.get("memory_options", "{}")
@@ -91,6 +90,9 @@ class Runtime:
         )
         budget_for(self.model_settings, initial.model_dump())
         self.signature = digest(self.focus, self.platform)
+        self.core = MemoryService(directory, model=self.provider)
+        self.pins = PinnedMemories(self)
+        self.bindings = ChatRouting(self.core)
 
     def allowed(self, scope):
         if not self.config.get("enabled", True):
@@ -106,16 +108,22 @@ class Runtime:
         return self.config.get("private_enabled", True)
 
     async def start(self):
-        # Old focus targets remain on disk but never run under a new identity/config.
-        for binding in self.core.store.list("astrbot_scope"):
-            active = binding["signature"] == self.signature and self.allowed(binding)
-            self.configure(binding, active)
-            if not active:
-                for job in self.core.jobs(binding["space_id"]):
-                    if job["status"] in ("queued", "running"):
-                        job.update(status="deferred", error="此会话或关注配置已停用")
-                        self.core.store.put("job", job, binding["space_id"])
         await self.core.start()
+        try:
+            # Old focus targets remain on disk but never run under a new identity/config.
+            for binding in self.core.store.list("astrbot_scope"):
+                if binding.get("disabled") or binding.get("simulation") or binding.get("merged_from"):
+                    continue
+                active = binding["signature"] == self.signature and self.allowed(binding)
+                self.configure(binding, active)
+                if not active:
+                    for job in self.core.jobs(binding["space_id"]):
+                        if job["status"] in ("queued", "running"):
+                            job.update(status="deferred", error="此会话或关注配置已停用")
+                            self.core.store.put("job", job, binding["space_id"])
+        except BaseException:
+            await self.core.close()
+            raise
 
     async def close(self):
         self.closed = True
@@ -130,6 +138,9 @@ class Runtime:
         }
 
     def person(self, sid, platform, uid, name=""):
+        mapped = self.bindings.person(sid, platform, uid)
+        if mapped:
+            return mapped
         for p in self.core.persons(sid):
             if p.get("platform") == platform and p.get("external_uid") == uid:
                 return p["id"]
@@ -142,7 +153,7 @@ class Runtime:
 
     def scope_info(self, sid):
         binding = next(
-            (b for b in self.core.store.list("astrbot_scope") if b["space_id"] == sid),
+            (b for b in sorted(self.core.store.list("astrbot_scope"), key=lambda b: (not (b.get("signature") == self.signature and self.allowed(b)), bool(b.get("merged_from")))) if b["space_id"] == sid and not b.get("disabled") and not b.get("simulation")),
             None,
         )
         if not binding:
@@ -163,6 +174,9 @@ class Runtime:
         }
 
     def configure(self, binding, active=True):
+        # Moved connections share the target; only its original owner configures it.
+        if binding.get("merged_from"):
+            return
         sid = binding["space_id"]
         cfg = self.core.config_for(sid)
         self.core.embeddings.configure(sid, EmbeddingInput(
@@ -249,12 +263,23 @@ class Runtime:
                 binding["conversation_id"] = cid
                 self.core.store.put("astrbot_scope", binding, sid)
                 self.configure(binding)
+            binding = self.bindings.resolve(key)
+            if not binding:
+                return None
+            if binding.get('needs_configure'):
+                self.configure(binding)
+                binding = self.core.store.put('astrbot_scope', dict(binding, needs_configure=False), binding['space_id'])
             # In groups, AstrBot may use per-member UMOs. Recall/maintenance use the latest caller's provider.
             if binding["umo"] != event.unified_msg_origin:
                 binding["umo"] = event.unified_msg_origin
                 self.core.store.put("astrbot_scope", binding, binding["space_id"])
                 self.configure(binding)
             return binding
+
+    def record_current(self, record):
+        current = self.bindings.resolve(record['id'])
+        return bool(current and current['space_id'] == record['space_id']
+                    and current.get('route_epoch', 0) == record.get('route_epoch', 0))
 
     def message_key(self, event):
         key = event.get_extra("memory_slice_key")
@@ -280,7 +305,7 @@ class Runtime:
     async def ingest(self, event):
         existing = event.get_extra("memory_slice_record")
         if existing:
-            return existing
+            return existing if self.record_current(existing) else None
         if self.ignored(event):
             return None
         binding = await self.bind(event)
@@ -411,6 +436,8 @@ class Runtime:
                        pinned=len(pinned['events']), selected=len(assembled['selected']) + len(pinned['events']), characters=len(wire),
                        outcome='ready' if wire else 'degraded' if degraded else 'no_match' if not result['items'] else 'budget' if 'char_budget' in codes else 'duplicate',
                        elapsed_ms=round((time.perf_counter()-started)*1000, 2))
+        if not self.record_current(record):
+            return ''
         event.set_extra('memory_slice_injection', summary)
         event.set_extra('memory_slice_stage', 'inject')
         return wire
@@ -418,7 +445,7 @@ class Runtime:
     def record_injection(self, event, outcome=None):
         summary = event.get_extra('memory_slice_injection')
         record = event.get_extra('memory_slice_record')
-        if not summary or not record:
+        if not summary or not record or not self.record_current(record):
             return
         summary = dict(summary, outcome=outcome or ('injected' if summary['selected'] else summary['outcome']))
         metrics = self.core.metrics
@@ -437,6 +464,7 @@ class Runtime:
         record = event.get_extra("memory_slice_record")
         if (
             not record
+            or not self.record_current(record)
             or event.get_extra("memory_slice_response_saved")
             or not text.strip()
             or self.closed

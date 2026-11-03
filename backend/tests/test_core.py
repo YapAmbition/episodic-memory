@@ -69,6 +69,31 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('陨石一号', result['context'])
         self.assertEqual([call[1]['purpose'] for call in self.adapter.calls], ['maintenance'])
 
+    async def test_portable_import_then_maintenance_and_recall(self):
+        from memory_slice.transfer import Transfers, ImportInput, digest
+        for legacy in (False, True):
+            with tempfile.TemporaryDirectory() as directory:
+                source=MemoryService(directory)
+                sid=source.add_space(SpaceInput(name='待迁移'))['id']
+                pid=source.persons(sid)[0]['id']
+                cid=source.add_conversation(sid,ConversationInput(person_id=pid))['id']
+                source.add_message(sid,cid,MessageInput(role='user',content='昨天烤面包失败，叫它陨石一号。'))
+                package=Transfers(source).export(sid)
+                if legacy:
+                    for row in package['payload']['records']:
+                        if row['kind']=='message':row['value'].pop('person_id')
+                    package['sha256']=digest(package['payload'])
+                transfers=Transfers(self.service)
+                request=ImportInput(package=package,operation_id=f'maintenance-import-{legacy}',target_space_id=self.sid)
+                plan=transfers.preview(request)
+                transfers.commit(request.model_copy(update={'preview_token':plan['preview_token']}))
+                self.service.put_model(self.sid,ModelInput(mode='llm',model='test-only'))
+                job=await self.finished(self.service.enqueue(self.sid,MaintenanceInput()))
+                self.assertEqual(job['status'],'completed',job)
+                self.assertTrue(all(m['processed'] for m in self.service.store.list('message',self.sid)))
+                result=await self.service.recall(self.sid,ContextInput(query='陨石一号',retrieval_mode='local'))
+                self.assertIn('陨石一号',result['context'])
+
     async def test_hybrid_without_embeddings_does_not_call_chat_model(self):
         await self.learn()
         result = await self.service.recall(self.sid, ContextInput(query='陨石一号', retrieval_mode='hybrid'))

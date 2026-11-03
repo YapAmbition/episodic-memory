@@ -33,14 +33,20 @@ from .errors import MemoryError as HTTPException
 from .adapters import RemoteModelAdapter
 
 
+from .database_guard import database_guard, initializing
+
+
 class MemoryService:
     """Framework-independent memory application. One instance owns one data directory.
 
     Call start()/close() from the host lifecycle. Model calls are injected through
     ModelAdapter; methods never create an HTTP app or listen on a network port.
     """
+    @initializing
     def __init__(self, data_dir, model=None, seed=False):
         self.store = Store(data_dir)
+        from .message_identity import repair_imported_messages
+        repair_imported_messages(self.store)
         self.model = model or RemoteModelAdapter()
         self.metrics = Monitoring(self.store)
         self.embeddings = Embeddings(self.store, self.metrics)
@@ -49,6 +55,7 @@ class MemoryService:
         self.background_tasks = set()
         self.scheduler_task = None
         self._closed = False
+        self._database_guard = database_guard(self.store.path)
         if seed:
             seed_demo(self.store)
         for config in self.store.list("config"):
@@ -65,35 +72,45 @@ class MemoryService:
     async def start(self):
         if self.scheduler_task is not None:
             return
-        self._closed = False
-        self.maintenance_locks, self.chat_locks = {}, {}
-        self.metrics._model_slots = None
-        for job in self.store.list("job"):
-            if job["status"] not in ("queued", "running"):
-                continue
-            if job.get("type", "maintenance") != "maintenance":
-                job.update(status="failed", error="此任务类型已停用", finished_at=iso())
+        self._database_guard.acquire(timeout=0)
+        try:
+            self._closed = False
+            self.maintenance_locks, self.chat_locks = {}, {}
+            self.metrics._model_slots = None
+            for job in self.store.list("job"):
+                if job["status"] not in ("queued", "running"):
+                    continue
+                if job.get("type", "maintenance") != "maintenance":
+                    job.update(status="failed", error="此任务类型已停用", finished_at=iso())
+                    self.store.put("job", job, job["space_id"])
+                    continue
+                job.update(status="deferred", error="服务曾中断，进度已保留；为避免重复消耗，请手动继续", finished_at=iso())
                 self.store.put("job", job, job["space_id"])
-                continue
-            job.update(status="deferred", error="服务曾中断，进度已保留；为避免重复消耗，请手动继续", finished_at=iso())
-            self.store.put("job", job, job["space_id"])
-            self.pause_maintenance(job["space_id"], job["error"])
-        self.scheduler_task = asyncio.create_task(self.scheduler())
-        self.embeddings.start()
+                self.pause_maintenance(job["space_id"], job["error"])
+            self.scheduler_task = asyncio.create_task(self.scheduler())
+            self.embeddings.start()
+        except BaseException:
+            self._database_guard.release()
+            raise
+
 
     async def close(self):
-        self._closed = True
-        tasks = list(self.background_tasks)
-        if self.scheduler_task:
-            tasks.append(self.scheduler_task)
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        self.background_tasks.clear()
-        self.scheduler_task = None
-        self.api_keys.clear()
-        await self.embeddings.close()
-        # Store opens short-lived connections; there is no persistent connection.
+        try:
+            self._closed = True
+            tasks = list(self.background_tasks)
+            if self.scheduler_task:
+                tasks.append(self.scheduler_task)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            self.background_tasks.clear()
+            self.scheduler_task = None
+            self.api_keys.clear()
+            await self.embeddings.close()
+            # Store opens short-lived connections; there is no persistent connection.
+        finally:
+            self._database_guard.release()
+
 
     def spawn(self, coro):
         if self._closed:
@@ -994,6 +1011,10 @@ class MemoryService:
     def delete_event(self, sid: str, eid: str):
         with self.store.connect() as con:
             self.store.delete("event", eid, sid, con)
+            for selection in self.store.list('astrbot_pins', sid, con):
+                if eid in selection.get('event_ids', []):
+                    selection['event_ids'] = [item for item in selection['event_ids'] if item != eid]
+                    self.store.put('astrbot_pins', selection, sid, con=con)
             con.execute("DELETE FROM versions WHERE event_id=? AND space_id=?", (eid, sid))
             con.execute("DELETE FROM records WHERE kind='fragment' AND space_id=? AND json_extract(data,'$.event_id')=?", (sid, eid))
             for event in self.store.list("event", sid, con):

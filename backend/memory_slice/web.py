@@ -42,6 +42,10 @@ from .schemas import (
 
 from .errors import MemoryError as HTTPException
 from .service import MemoryService
+from .space_copy import SpaceCopier, CopyInput
+from .transfer import Transfers, ImportInput, MAX_BYTES, formatted_json
+from starlette.concurrency import run_in_threadpool
+from pydantic import ValidationError
 
 
 async def cancellable_recall(request, operation):
@@ -85,6 +89,8 @@ def create_app(
         raise ValueError("插件管理接口必须配置至少 16 位访问令牌")
     store, metrics = service.store, service.metrics
     config_for, recall = service.config_for, service.recall
+    copier = SpaceCopier(service, pinned_memories.runtime.context_char_budget if pinned_memories else None)
+    transfers = Transfers(service, copier.pin_budget)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -172,6 +178,8 @@ def create_app(
                     path,
                 )
             )
+            allowed = allowed or bool(re.fullmatch(r"/spaces/[^/]+/(?:copy|merge)(?:/preview)?", path))
+            allowed = allowed or path in ('/transfers/preview', '/transfers/import', '/transfers/operation-id')
             if not allowed:
                 raise HTTPException(
                     403, "此操作由 AstrBot 管理；网页不创建模拟对话或修改插件配置"
@@ -287,6 +295,52 @@ def create_app(
             "managed_configuration": managed,
             "simulator_enabled": not managed,
         }
+
+    @api.get('/spaces/{sid}/transfer', tags=['Spaces'])
+    def export_transfer(sid: str, include_messages: bool = True):
+        package = transfers.export(sid, include_messages)
+        return Response(formatted_json(package), media_type='application/json', headers={
+            'Content-Disposition': 'attachment; filename="memory-slice-transfer.json"'})
+
+    async def read_import(request: Request):
+        chunks = bytearray()
+        async for chunk in request.stream():
+            chunks.extend(chunk)
+            if len(chunks) > MAX_BYTES + 1024 * 1024:
+                raise HTTPException(413, '迁移请求超过大小限制（文件最大 32 MiB）')
+        try:
+            return ImportInput.model_validate_json(bytes(chunks))
+        except (ValidationError, ValueError) as exc:
+            raise HTTPException(422, '导入请求格式错误，请选择有效的迁移包') from exc
+
+    @api.post('/transfers/operation-id', tags=['Spaces'])
+    def new_import_operation():
+        return {'operation_id': secrets.token_hex(24)}
+
+    @api.post('/transfers/preview', tags=['Spaces'])
+    async def preview_transfer(request: Request):
+        return await run_in_threadpool(transfers.preview, await read_import(request))
+
+    @api.post('/transfers/import', tags=['Spaces'])
+    async def import_transfer(request: Request):
+        return await run_in_threadpool(transfers.commit, await read_import(request))
+
+    @api.get('/transfers/operations/{operation_id}', tags=['Spaces'])
+    def transfer_operation(operation_id: str):
+        return transfers.operation(operation_id)
+
+    @api.post('/spaces/{sid}/copy/preview', tags=['Spaces'])
+    async def preview_copy(sid: str, body: CopyInput):
+        return copier.preview(sid, body)
+
+    @api.post('/spaces/{sid}/copy', tags=['Spaces'])
+    async def copy_space(sid: str, body: CopyInput):
+        return copier.copy(sid, body)
+
+    @api.post('/spaces/{sid}/merge/preview', tags=['Spaces'], deprecated=True)
+    @api.post('/spaces/{sid}/merge', tags=['Spaces'], deprecated=True)
+    async def retired_merge(sid: str):
+        raise HTTPException(410, '旧的空间搬迁接口已停用，请刷新页面，使用“复制到其他空间”')
 
     @api.get("/spaces", tags=["Spaces"])
     def spaces():

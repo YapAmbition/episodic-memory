@@ -56,8 +56,8 @@ def build(output, build_frontend=True):
     for path in (ROOT / "plugins" / NAME).iterdir():
         if path.is_file() and path.suffix in (".py", ".json", ".yaml", ".txt", ".md"):
             files[path.name] = path.read_bytes()
-    for path in (ROOT / "backend" / "memory_slice").glob("*.py"):
-        files["memory_slice/" + path.name] = path.read_bytes()
+    for path in (ROOT / "backend" / "memory_slice").rglob("*.py"):
+        files["memory_slice/" + path.relative_to(ROOT / "backend" / "memory_slice").as_posix()] = path.read_bytes()
     for path in (ROOT / "evals" / "recall").rglob("*.json"):
         files["memory_slice/benchmark_data/" + path.relative_to(ROOT / "evals" / "recall").as_posix()] = path.read_bytes()
     for path in (frontend / "dist").rglob("*"):
@@ -65,6 +65,7 @@ def build(output, build_frontend=True):
             files["frontend/" + path.relative_to(frontend / "dist").as_posix()] = (
                 path.read_bytes()
             )
+    files["restore_memory_backup.py"] = (ROOT / "scripts" / "restore_memory_backup.py").read_bytes()
     files.setdefault("__init__.py", b"")
     files["core-manifest.json"] = json.dumps(
         {
@@ -82,7 +83,7 @@ def build(output, build_frontend=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v0.3.4.zip")))
+    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v0.3.8.zip")))
     parser.add_argument(
         "--skip-frontend-build",
         action="store_true",

@@ -149,6 +149,34 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = Runtime(self.host, self.config, self.tmp.name)
         await self.runtime.start()
 
+    async def test_space_copy_pins_frozen_routes_and_restart(self):
+        from astrbot_plugin_memory_slice.memory_slice.space_copy import SpaceCopier, CopyInput
+        old = await self.runtime.ingest(Event(platform='old-qq'))
+        new = await self.runtime.ingest(Event(platform='new-qq'))
+        sid, target = old['space_id'], new['space_id']
+        e = self.runtime.core.create_event(sid, EventInput(title='常驻约定',body='每周三浇花'))
+        self.runtime.core.freeze_event(sid,e['id'],True)
+        self.runtime.pins.save(sid,[e['id']])
+        copier=SpaceCopier(self.runtime.core,self.runtime.context_char_budget)
+        plan=copier.preview(sid,CopyInput(target_space_id=target))
+        result=copier.copy(sid,CopyInput(target_space_id=target,preview_token=plan['preview_token'],pinned_event_ids=[e['id']]))
+        copied=result['event_map'][e['id']]
+        self.assertNotEqual(copied,e['id'])
+        self.assertTrue(self.runtime.record_current(old))
+        wire=await self.runtime.recall(Event('闲聊',platform='new-qq',mid='after'))
+        self.assertIn('每周三浇花',wire)
+        self.assertIn(copied,wire)
+        self.assertTrue(self.runtime.core.store.get('event',copied,target)['frozen'])
+        self.assertEqual(self.runtime.pins.ids(target),[copied])
+        self.assertEqual(self.runtime.pins.ids(sid),[e['id']])
+        self.assertEqual((await self.runtime.bind(Event(platform='old-qq')))['space_id'],sid)
+        await self.reset()
+        self.assertEqual((await self.runtime.bind(Event(platform='old-qq')))['space_id'],sid)
+        self.assertEqual((await self.runtime.bind(Event(platform='new-qq')))['space_id'],target)
+        old_wire=await self.runtime.recall(Event('闲聊',platform='old-qq',mid='after-restart'))
+        self.assertIn(e['id'],old_wire)
+        self.assertNotIn(copied,old_wire)
+
     async def test_pinned_every_round_latest_version_and_scope(self):
         record = await self.runtime.ingest(Event())
         sid = record['space_id']
@@ -250,7 +278,8 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
             await self.runtime.recall(Event("边界", mid="3"))
         self.assertIn("超过上限", await self.runtime.status(Event(mid="4")))
         self.runtime.core.delete_event(sid, ids[0])
-        self.assertTrue(self.runtime.pins.inspect(sid)['errors'])
+        self.assertEqual(self.runtime.pins.inspect(sid)['errors'], [])
+        self.assertEqual(self.runtime.pins.ids(sid), [])
         self.runtime.pins.save(sid, [])
         self.assertEqual(self.runtime.pins.inspect(sid)['characters'], 0)
 

@@ -42,6 +42,44 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.close()
         self.tmp.cleanup()
 
+    async def test_transfer_authenticated_roundtrip(self):
+        self.runtime.core.create_event(self.sid, EventInput(title='迁移约定',body='下周一起散步'))
+        package=await self.client.get(self.base+'/transfer')
+        self.assertEqual(package.status_code,200,package.text)
+        new=await self.runtime.bind(Event(platform='new-transfer-platform'))
+        operation=await self.client.post('/api/v1/transfers/operation-id',json={})
+        self.assertEqual(operation.status_code,200)
+        body=dict(package=package.json(),target_space_id=new['space_id'],operation_id=operation.json()['operation_id'])
+        denied=await self.client.post('/api/v1/transfers/preview',json=body,headers={'Authorization':'Bearer bad'})
+        self.assertEqual(denied.status_code,401)
+        preview=await self.client.post('/api/v1/transfers/preview',json=body)
+        self.assertEqual(preview.status_code,200,preview.text)
+        body['preview_token']=preview.json()['preview_token']
+        result=await self.client.post('/api/v1/transfers/import',json=body)
+        self.assertEqual(result.status_code,200,result.text)
+        repeated=await self.client.post('/api/v1/transfers/import',json=body)
+        self.assertEqual(repeated.json(),result.json())
+        status=await self.client.get('/api/v1/transfers/operations/'+body['operation_id'])
+        self.assertEqual(status.json(),result.json())
+        self.assertEqual((await self.runtime.bind(Event()))['space_id'],self.sid)
+        self.assertEqual((await self.runtime.bind(Event(platform='new-transfer-platform')))['space_id'],new['space_id'])
+        self.assertEqual(len(self.runtime.core.store.list('event',new['space_id'])),1)
+        bad=await self.client.post('/api/v1/transfers/preview',content=b'{broken')
+        self.assertEqual(bad.status_code,422)
+
+    async def test_space_copy_api_authenticated(self):
+        new=await self.runtime.bind(Event(platform='new-platform'))
+        body={'target_space_id':new['space_id']}
+        preview=await self.client.post(self.base+'/copy/preview',json=body)
+        self.assertEqual(preview.status_code,200,preview.text)
+        body['preview_token']=preview.json()['preview_token']
+        denied=await self.client.post(self.base+'/copy',json=body,headers={'Authorization':'Bearer wrong'})
+        self.assertEqual(denied.status_code,401)
+        response=await self.client.post(self.base+'/copy',json=body)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()['space_id'],new['space_id'])
+        self.assertEqual((await self.client.get('/api/v1/bindings')).status_code,404)
+
     async def test_pinned_and_frozen_are_independent(self):
         e = self.runtime.core.create_event(self.sid, EventInput(title="约定", body="每周三浇花"))
         url = self.base + '/events/' + e['id']

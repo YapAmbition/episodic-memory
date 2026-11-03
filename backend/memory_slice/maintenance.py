@@ -120,6 +120,8 @@ def split_event(store, sid, eid, body, con):
         child = dict(original, id=new_id("event"), title=part.title, body=part.body,
                      split_from=eid, updated_at=iso())
         child.pop("version", None)
+        child.pop("origin_id", None)
+        child.pop("copied_from", None)
         child = store.put("event", child, sid, con=con)
         save_fragment(store, sid, child, part.body, "split", child["source_ids"], con)
         children.append(child)

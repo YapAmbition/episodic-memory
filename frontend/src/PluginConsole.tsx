@@ -32,7 +32,6 @@ export function PluginConsole({space, stats, onMaintain, onJobs, busy}: {
   const [error,setError]=useState("");
   const [updated,setUpdated]=useState("");
   const [query,setQuery]=useState("");
-  const [saveFailed,setSaveFailed]=useState(false);
   const [result,setResult]=useState<Recall|null>(null);
   const [searching,setSearching]=useState(false);
   const base=`/spaces/${space.id}`;
