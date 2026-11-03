@@ -95,6 +95,33 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(messages[('s','v')]['person_id'],'p')
         self.assertEqual(messages[('s','r')]['person_id'],'p')
 
+    def test_missing_reinforcement_source_roundtrips_without_fake_messages(self):
+        from memory_slice.schemas import ReinforceInput
+        message=self.source.post_message(self.sid,self.message['conversation_id'],MessageInput(role='user',content='又想到看海',sender_id=self.message['person_id']))
+        event=self.source.reinforce(self.sid,self.event['id'],ReinforceInput(message_id=message['id']))
+        self.source.store.delete('message',message['id'],self.sid)
+        original=self.source.store.get('event',event['id'])
+        self.pkg=self.exporter.export(self.sid)
+        self.assertEqual(self.source.store.get('event',event['id']),original)
+        b,_=self.preview(self.body());result=self.importer.commit(b)
+        imported=self.target.store.get('event',result['event_map'][next(iter(result['event_map']))])
+        reinforcement=imported['reinforcements'][0]
+        self.assertIsNone(reinforcement['message_id'])
+        self.assertEqual(reinforcement['unavailable_message_id'],message['id'])
+        self.assertEqual(reinforcement['at'],event['reinforcements'][0]['at'])
+        self.assertEqual(len(self.target.store.list('message',self.tid)),1)
+        self.importer.export(self.tid)
+
+    def test_buffer_cleanup_protects_reinforcement_messages(self):
+        from memory_slice.schemas import ReinforceInput
+        from memory_slice.focus import cleanup_buffer
+        message=self.source.post_message(self.sid,self.message['conversation_id'],MessageInput(role='user',content='又想到看海',sender_id=self.message['person_id']))
+        self.source.reinforce(self.sid,self.event['id'],ReinforceInput(message_id=message['id']))
+        self.source.store.put('message',dict(message,retention='buffer',expires_at='2000-01-01T00:00:00+00:00',processed=True),self.sid)
+        self.assertEqual(cleanup_buffer(self.source.store,self.sid,self.source.config_for(self.sid)),0)
+        self.assertEqual(self.source.store.get('message',message['id'])['retention'],'permanent')
+        self.exporter.export(self.sid)
+
     def test_roundtrip_independent_repeat_and_backup(self):
         before=self.state();b,p=self.preview(self.body())
         self.assertEqual(before,self.state())

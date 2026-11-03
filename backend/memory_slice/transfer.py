@@ -19,6 +19,7 @@ from .schemas import EventInput, PersonInput, SpaceInput
 from .service import MemoryService
 from .space_copy import SpaceCopier, CopyInput, REFERENCE_KINDS
 from .store import iso, dt
+from .reinforcements import portable_event
 
 MAX_BYTES = 32 * 1024 * 1024
 KINDS = ('person', 'conversation', 'message', 'event', 'fragment', 'astrbot_pins', 'astrbot_person_alias')
@@ -117,6 +118,12 @@ class Transfers:
             for rev in revisions: rev['data']=clean('event',json.loads(rev['data']))
             ids={(r['kind'],r['value']['id']) for r in records} | {('revision',r['id']) for r in revisions}
             origins=[dict(r) for r in con.execute('SELECT * FROM copy_identity WHERE space_id=? ORDER BY kind,origin_id',(sid,)) if (r['kind'],r['record_id']) in ids]
+        # Reinforcement survives its original chat message. Preserve provenance
+        # explicitly rather than inventing a replacement message or losing the timestamp.
+        message_ids={r['value']['id'] for r in records if r['kind']=='message'}
+        for row in records:
+            if row['kind']=='event':row['value']=portable_event(row['value'],message_ids)
+        for rev in revisions:rev['data']=portable_event(rev['data'],message_ids)
         payload=dict(space={k:space.get(k,'') for k in ('id','name','description')},exported_at=iso(),include_messages=include_messages,records=records,revisions=revisions,origins=origins)
         package=dict(format='memory-slice',format_version=1,payload=payload,sha256=digest(payload))
         if len(formatted_json(package))>MAX_BYTES:raise MemoryError(413,'完整迁移包超过 32 MiB，当前版本暂不支持；请保留原库，不会省略内容')
@@ -163,7 +170,7 @@ class Transfers:
                         if required not in value:raise ValueError('事件缺少字段：'+required)
                     if not isinstance(value.get('reinforcements',[]),list):raise ValueError('无效强化记录')
                     for reinforcement in value.get('reinforcements',[]):
-                        identity(reinforcement['message_id']);dt(reinforcement['at'])
+                        identity(reinforcement.get('message_id') or reinforcement.get('unavailable_message_id'));dt(reinforcement['at'])
                     if not isinstance(value.get('frozen',False),bool):raise ValueError('无效冻结状态')
                 elif kind=='person':PersonInput.model_validate_json(encoded({k:v for k,v in value.items() if k in PersonInput.model_fields}),strict=True)
                 elif kind=='message':
@@ -190,7 +197,7 @@ class Transfers:
                 elif key in REFERENCE_KINDS and value is not None:
                     if not isinstance(value,str):raise ValueError('关联 ID 类型错误')
                     if value not in indexes[REFERENCE_KINDS[key]] and not historical and key not in ('split_from','split_into','merged_into','archive_conversation_id'):
-                        raise ValueError('关联指向缺失记录：'+value)
+                        raise ValueError('关联指向缺失记录：'+value+'（字段 '+key+'）')
             for row in p['records']:
                 references(row['value'])
                 if row['kind']=='event':

@@ -113,9 +113,12 @@ def cleanup_buffer(store, sid, config):
         for kind in ('event', 'fragment'):
             for record in store.list(kind, sid, con):
                 protected.update(record.get('source_ids', []))
+                protected.update(r['message_id'] for r in record.get('reinforcements', []) if r.get('message_id'))
         import json
         for row in con.execute('SELECT data FROM versions WHERE space_id=?', (sid,)):
-            protected.update(json.loads(row[0]).get('source_ids', []))
+            history=json.loads(row[0])
+            protected.update(history.get('source_ids', []))
+            protected.update(r['message_id'] for r in history.get('reinforcements', []) if r.get('message_id'))
         protected.update(m['id'] for m in messages if m.get('retention') != 'buffer' or (m.get('maintenance_offset', 0) and not m.get('processed')))
         by_id = {m['id']: m for m in messages}
         for mid in list(protected):

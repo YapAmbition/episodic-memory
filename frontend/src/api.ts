@@ -60,7 +60,17 @@ export async function downloadMemory(spaceId: string) {
   const r = await fetch(`/api/v1/spaces/${spaceId}/transfer`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
-  if (!r.ok) throw new Error("导出失败，请检查服务连接");
+  if (!r.ok) {
+    let detail = "";
+    try {
+      const data = await r.json();
+      if (typeof data.detail === "string") detail = data.detail;
+    } catch {
+      // Proxies may return HTML; do not display their raw response.
+    }
+    if (r.status === 401) window.dispatchEvent(new Event("memory-slice-auth"));
+    throw new Error(`导出失败（HTTP ${r.status}）${detail ? "：" + detail : "，请查看同一时间的服务日志"}`);
+  }
   const url = URL.createObjectURL(await r.blob());
   const a = document.createElement("a");
   a.href = url;

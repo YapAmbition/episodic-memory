@@ -1,12 +1,12 @@
 # 记忆切片 · Memory Slice for AstrBot
 
-插件版本 **0.3.8**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
+插件版本 **0.3.11**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
 
 ## 安装
 
 要求 **AstrBot >= 4.24.0**，使用其内置 LLM/Agent 流程。该最低版本来自本轮临时内容块 API；不支持绕过版本限制安装到旧版。外接 Dify 等未触发标准请求钩子的执行器尚未适配。
 
-1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.8.zip`。
+1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.11.zip`。
 2. 如果使用手工安装，将 ZIP 中的 `astrbot_plugin_memory_slice` 文件夹放到 AstrBot 的 `data/plugins/` 下；在 AstrBot 的 Python 环境安装该目录的 `requirements.txt`，然后重载插件。
 3. 插件配置中选择已有聊天模型；留空时跟随当前会话。无需填写新的 API Key 或模型地址。
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
@@ -139,7 +139,7 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 构建脚本先在本机执行 React 生产构建（首次自动执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
-默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.8.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
+默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.11.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 
 当前通过 25 项插件测试、113 项核心/HTTP 回归测试和 17 项前端工具测试。新增覆盖网页鉴权、同实例共享、只读配置、事件编辑、整理、端口释放及重启。插件测试使用真实共享核心、SQLite 和模拟 AstrBot 宿主，覆盖事件整理/召回、群聊筛选与隔离、重载、去重、超时取消、模型输出截断、临时注入、发送后记录、故障不阻断聊天及包内核心一致性。
 
@@ -242,3 +242,21 @@ python scripts/restore_memory_backup.py --backup "/备份路径/before-import-xx
 使用安装了项目依赖的 Python。AstrBot 插件目录内也包含 `restore_memory_backup.py`，在插件目录运行时去掉命令中的 `scripts/`；使用 AstrBot 的 Python 环境。Windows 路径同样放在引号内。
 
 恢复工具先获取与服务共享的跨进程互斥锁，运行中的新版服务会阻止恢复，恢复期间也不能启动服务。随后检查备份表结构、主键、空间配置及业务记录，校验通过才把当前数据库另存为 `backups/before-restore-*.sqlite3`，然后通过 SQLite 备份接口恢复并检查完整性。旧版服务尚无互斥锁，升级或恢复前仍须停止；不要在服务运行时执行。工具完成后再启动服务；如需撤回恢复，可以用刚保存的 before-restore 文件重复上述流程。
+
+### Windows 启动时提示 unable to open database file
+
+0.3.9 起，每条核心 SQLite 连接都设置 `PRAGMA temp_store=MEMORY`，排序与临时表使用内存，避免宿主继承的临时目录被删除后导致查询失败。数据库和 WAL 仍保存在原数据目录；大型排序会增加内存占用。
+
+如果 AstrBot 由临时 Agent 环境启动，也建议在自己的 `run_astrbot.bat` 中、启动 AstrBot 的命令之前加入以下设置，避免其他组件继续继承短期临时目录（该脚本不属于本仓库）：
+
+```bat
+set "TEMP=%LOCALAPPDATA%\Temp"
+set "TMP=%TEMP%"
+if not exist "%TEMP%" mkdir "%TEMP%"
+```
+
+这只设置当前启动进程及其子进程的环境变量，不修改系统全局环境。
+
+0.3.10 修复导出错误被隐藏，以及强化来源消息被缓冲清理的问题。已缺失的强化来源在迁移包中保留 `unavailable_message_id` 和强化时间，不生成虚构消息；请用新版导入此类迁移包。其他缺失关联仍会提示具体字段，避免静默丢失来源。
+
+0.3.11 让空间复制与文件迁移共用缺失强化来源的兼容处理，并修复事件合并将多个缺失来源强化记录错误去重的问题。

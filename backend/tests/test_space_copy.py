@@ -32,6 +32,50 @@ class CopyTests(unittest.TestCase):
         plan=self.copier.preview(source,CopyInput(target_space_id=target))
         return self.copier.copy(source,CopyInput(target_space_id=target,preview_token=plan['preview_token'],**kw))
 
+    def test_missing_reinforcement_copy_history_merge_and_reexport(self):
+        from memory_slice.schemas import MergeInput
+        from memory_slice.transfer import Transfers,ImportInput
+        events=[self.event(title='第一件'),self.event(title='第二件')]
+        for index,event in enumerate(events):
+            event['reinforcements']=[{'message_id':f'missing_{index}','at':event['learned_at']}]
+            self.store.put('event',event,self.a)
+            # Save a historical snapshot which also contains the now-missing source.
+            self.store.put('event',dict(event,body=event['body']+' 后续'),self.a)
+        before=self.snapshot(self.a)
+        result=self.perform()
+        self.assertEqual(before,self.snapshot(self.a))
+        ids=list(result['event_map'].values())
+        for index,eid in enumerate(ids):
+            copied=self.store.get('event',eid,self.b)
+            self.assertIsNone(copied['reinforcements'][0]['message_id'])
+            self.assertIn(copied['reinforcements'][0]['unavailable_message_id'],{'missing_0','missing_1'})
+            histories=self.store.revisions(eid,self.b)
+            refs=[r for v in histories for r in v['event'].get('reinforcements',[])]
+            self.assertTrue(refs)
+            self.assertTrue(all(r['message_id'] is None and r['unavailable_message_id'] for r in refs))
+        self.assertEqual(self.store.list('message',self.b),[])
+        # Repeating a copy does not duplicate reinforcement history.
+        self.perform(conflict_policy='overwrite')
+        self.core.merge(self.b,MergeInput(event_ids=ids,target_id=ids[0],reason='回归测试'))
+        merged=self.store.get('event',ids[0],self.b)
+        self.assertEqual({r['unavailable_message_id'] for r in merged['reinforcements']},{'missing_0','missing_1'})
+        self.assertEqual(len(merged['reinforcements']),2)
+        transfer=Transfers(self.core);package=transfer.export(self.b)
+        body=ImportInput(package=package,operation_id='reinforcement-roundtrip-test',new_space_name='再次迁移')
+        plan=transfer.preview(body)
+        outcome=transfer.commit(body.model_copy(update={'preview_token':plan['preview_token']}))
+        final=[e for e in self.store.list('event',outcome['space_id']) if e['status']!='archived'][0]
+        self.assertEqual(len(final['reinforcements']),2)
+
+    def test_reinforcement_merge_deduplicates_identity_not_null(self):
+        from memory_slice.reinforcements import merge_reinforcements
+        missing=lambda mid:dict(message_id=None,unavailable_message_id=mid,at='2026-01-01T00:00:00Z')
+        rows=[missing('a'),missing('b'),missing('a')]
+        self.assertEqual(len(merge_reinforcements(rows)),2)
+        live=dict(message_id='a',at='2026-01-01T00:00:00Z')
+        self.assertEqual(merge_reinforcements([live,missing('a')]),[live])
+        self.assertEqual(merge_reinforcements([missing('a'),live]),[live])
+
     def snapshot(self,sid):
         with self.store.connect() as con:
             return (list(con.execute('SELECT * FROM records WHERE space_id=? ORDER BY kind,id',(sid,))),

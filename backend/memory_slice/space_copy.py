@@ -11,6 +11,7 @@ from .errors import MemoryError
 from .integrations.routing import alias_id
 from .pinned_context import pin_size
 from .store import iso, new_id
+from .reinforcements import portable_event
 
 CONTENT_KINDS = ('person', 'conversation', 'message', 'event')
 REFERENCE_KINDS = {
@@ -189,7 +190,8 @@ class SpaceCopier:
                 for eid,event in data[source].get('event',{}).items():
                     dest=mapping['event'][eid]
                     if actions[eid]=='skip':event_results[dest]=data[target]['event'][dest];continue
-                    value=rewrite({k:v for k,v in event.items() if k!='copied_from'},strict=True)
+                    portable=portable_event(event,data[source].get('message',{}))
+                    value=rewrite({k:v for k,v in portable.items() if k!='copied_from'},strict=True)
                     value.update(id=dest,space_id=target,origin_id=event.get('origin_id',eid),updated_at=iso(),
                         copied_from=dict(space_id=source,event_id=eid,version=event['version']))
                     value['version']=data[target].get('event',{}).get(dest,{}).get('version',0)+1
@@ -266,7 +268,7 @@ class SpaceCopier:
                         history_origins=origins(source,'revision',{'id':rev['id']})
                         found=con.execute("SELECT 1 FROM copy_identity c JOIN versions v ON v.id=c.record_id AND v.space_id=c.space_id WHERE c.space_id=? AND c.kind='revision' AND c.origin_id IN ("+','.join('?' for _ in history_origins)+')',(target,*history_origins)).fetchone()
                         if found:continue
-                        revision_id=new_id('rev');snapshot=rewrite(json.loads(rev['data']))
+                        revision_id=new_id('rev');snapshot=rewrite(portable_event(json.loads(rev['data']),data[source].get('message',{})))
                         snapshot.update(id=dest,space_id=target,origin_id=event.get('origin_id',eid))
                         con.execute('INSERT INTO versions VALUES(?,?,?,?,?)',(revision_id,dest,target,json.dumps(snapshot,ensure_ascii=False),rev['saved_at']))
                         remember('revision',{'id':rev['id']},revision_id)

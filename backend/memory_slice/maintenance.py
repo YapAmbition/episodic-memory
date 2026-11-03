@@ -4,6 +4,7 @@ import re
 from .errors import MemoryError as HTTPException
 
 from .store import iso, new_id
+from .reinforcements import merge_reinforcements
 
 
 def unique(items):
@@ -73,8 +74,7 @@ def merge_events(store, sid, body, con):
         target["links"] += source["links"]
         target["salience"] = max(target["salience"], source["salience"])
         target["learned_at"] = min(target["learned_at"], source["learned_at"])
-        exposures = {e["message_id"]: e for e in target.get("reinforcements", []) + source.get("reinforcements", [])}
-        target["reinforcements"] = list(exposures.values())
+        target["reinforcements"] = merge_reinforcements(target.get("reinforcements", []) + source.get("reinforcements", []))
         save_fragment(store, sid, target, source["body"], "merge", source["source_ids"], con)
         source.update(status="archived", merged_into=target["id"], updated_at=iso())
         store.put("event", source, sid, con=con)

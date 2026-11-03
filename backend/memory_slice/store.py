@@ -105,6 +105,9 @@ class Store:
         con = sqlite3.connect(str(self.path), timeout=30)
         con.row_factory = sqlite3.Row
         try:
+            # Hosts may inherit a temporary directory that disappears while running.
+            # Keep SQLite sort/index scratch tables off that directory on every connection.
+            con.execute("PRAGMA temp_store=MEMORY")
             yield con
             con.commit()
         except BaseException:
