@@ -50,3 +50,13 @@ def repair_imported_messages(store):
         changed=complete_person_ids(messages,conversations,persons)
         for message in changed:store.put('message',message,message['space_id'],con=con)
         return len(changed)
+
+
+def portable_message(message, message_ids):
+    """Keep the original reply ID as provenance when its message is unavailable."""
+    result=dict(message)
+    parent=result.get('in_reply_to')
+    if parent and parent not in message_ids:
+        result['unavailable_in_reply_to']=parent
+        result['in_reply_to']=None
+    return result

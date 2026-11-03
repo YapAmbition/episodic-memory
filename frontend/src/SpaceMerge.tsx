@@ -1,3 +1,4 @@
+import { CompensationNotice, MigrationRecovery, type Compensation } from './MigrationRecovery';
 import { SpaceTransfer } from './SpaceTransfer';
 import { useState } from 'react';
 import { ArrowRight, Copy } from 'lucide-react';
@@ -7,7 +8,7 @@ import './spaceMerge.css';
 
 type Choice = 'skip'|'overwrite';
 type Conflict = {source_id:string;target_id:string;origin_id:string;source_title:string;target_title:string;target_frozen:boolean;source_version:number;target_version:number};
-type Preview = {preview_token:string; counts:Record<string,number>; reused_people:number; new_events:number; conflicts:Conflict[]; pinned_events:{id:string;title:string;from_source:boolean}[]; selected_pins:string[];pin_limit:number};
+type Preview = {compensation?:Compensation;preview_token:string; counts:Record<string,number>; reused_people:number; new_events:number; conflicts:Conflict[]; pinned_events:{id:string;title:string;from_source:boolean}[]; selected_pins:string[];pin_limit:number};
 export function SpaceMerge({spaces,onMerged}:{spaces:Space[];onMerged:(target:string)=>Promise<void>}) {
   const [tab,setTab]=useState<'copy'|'transfer'>('copy');
   const [source,setSource]=useState(''),[target,setTarget]=useState('');
@@ -20,8 +21,8 @@ export function SpaceMerge({spaces,onMerged}:{spaces:Space[];onMerged:(target:st
     setPreview(p);setPins(p.selected_pins);setChoices({});
   }catch(e){setError(e instanceof Error?e.message:String(e))}finally{setBusy(false)}}
   async function copy(){if(!preview)return;setBusy(true);setError('');try{
-    const result=await post<{counts:Record<string,number>}>(`/spaces/${source}/copy`,{target_space_id:target,preview_token:preview.preview_token,event_choices:choices,pinned_event_ids:pins});
-    setPreview(null);setConfirmed(false);setNotice(`复制完成：新增 ${result.counts.create||0} 件、覆盖 ${result.counts.overwrite||0} 件、跳过 ${result.counts.skip||0} 件事件。两个空间仍可独立使用。`);await onMerged(target);
+    const result=await post<{counts:Record<string,number>;compensation?:Compensation}>(`/spaces/${source}/copy`,{target_space_id:target,preview_token:preview.preview_token,event_choices:choices,pinned_event_ids:pins});
+    setPreview(null);setConfirmed(false);setNotice(`复制完成：新增 ${result.counts.create||0} 件、覆盖 ${result.counts.overwrite||0} 件、跳过 ${result.counts.skip||0} 件事件。两个空间仍可独立使用。补偿资料 ${result.compensation?.compensated||0} 条，待恢复 ${result.compensation?.pending||0} 条。`);await onMerged(target);
   }catch(e){setError(e instanceof Error?e.message:String(e));setConfirmed(false)}finally{setBusy(false)}}
   const overwritten=preview?.conflicts.filter(c=>choices[c.source_id]==='overwrite').length||0;
   return <><div className="transfer-tabs"><button className={tab==='copy'?'active':''} onClick={()=>setTab('copy')}>本机空间复制</button><button className={tab==='transfer'?'active':''} onClick={()=>setTab('transfer')}>文件导入 / 导出</button></div>{tab==='transfer'?<SpaceTransfer spaces={spaces} onImported={onMerged}/>:<section className="merge-page">
@@ -36,7 +37,7 @@ export function SpaceMerge({spaces,onMerged}:{spaces:Space[];onMerged:(target:st
     </div><div className="merge-card">
       <h2>核对复制内容</h2>
       {!preview?<p>选择两个空间并预览。重复复制会识别同源记录，聊天消息不会重复添加。</p>:<>
-        <div className="merge-counts">{[['event','源事件'],['message','源消息'],['conversation','源会话'],['person','源人物']].map(([key,label])=><div key={key}><strong>{preview.counts[key]||0}</strong><span>{label}</span></div>)}</div>
+        <CompensationNotice value={preview.compensation}/><div className="merge-counts">{[['event','源事件'],['message','源消息'],['conversation','源会话'],['person','源人物']].map(([key,label])=><div key={key}><strong>{preview.counts[key]||0}</strong><span>{label}</span></div>)}</div>
         <p>新增 {preview.new_events} 件事件，发现 {preview.conflicts.length} 件同源事件。{preview.reused_people} 个人物复用目标记录。</p>
         {!!preview.conflicts.length&&<div className="copy-conflicts"><h3>同源事件 · 默认跳过</h3><div className="copy-batch"><button className="button" disabled={busy} onClick={()=>{setChoices({});setConfirmed(false)}}>全部跳过</button><button className="button" disabled={busy} onClick={()=>{setChoices(Object.fromEntries(preview.conflicts.map(c=>[c.source_id,c.target_frozen?'skip':'overwrite'])));setConfirmed(false)}}>覆盖未冻结事件</button></div>
           {preview.conflicts.map(c=><label className="copy-conflict" key={c.source_id}><span><strong>{c.source_title}</strong><small>目标：{c.target_title}{c.target_frozen?' · 已冻结，请先解冻才能覆盖':''}</small></span><select aria-label={`处理 ${c.source_title}`} disabled={busy} value={choices[c.source_id]||'skip'} onChange={e=>{setChoices({...choices,[c.source_id]:e.target.value as Choice});setConfirmed(false)}}><option value="skip">跳过 · 保留目标</option><option value="overwrite" disabled={c.target_frozen}>覆盖 · 使用源内容</option></select></label>)}
@@ -48,6 +49,7 @@ export function SpaceMerge({spaces,onMerged}:{spaces:Space[];onMerged:(target:st
         <button className="button primary" disabled={busy||!confirmed} onClick={()=>void copy()}>确认复制</button>
       </>}
     </div></div>
+    <MigrationRecovery spaceId={target}/>
     {(error||notice)&&<div role="status" className={`merge-feedback ${error?'error':''}`}>{error||notice}</div>}
   </section>}</>
 }

@@ -134,9 +134,18 @@ def cleanup_buffer(store, sid, config):
                 m.update(retention='permanent', expires_at=None)
                 store.put('message', m, sid, con=con)
         excess = max(0, len(temporary) - config.get('focus_buffer_limit', 2000))
-        removed = 0
-        for i, m in enumerate(temporary):
-            if i < excess or dt(m['expires_at']) <= utcnow():
-                store.delete('message', m['id'], sid, con)
-                removed += 1
-        return removed
+        candidates={m['id'] for i,m in enumerate(temporary) if i < excess or dt(m['expires_at']) <= utcnow()}
+        # A still-live buffered reply also needs its ancestors. Delete a chain only
+        # when none of its messages is retained; otherwise export gets dangling replies.
+        needed=[m['id'] for m in messages if m['id'] not in candidates]
+        seen=set()
+        while needed:
+            mid=needed.pop()
+            if mid in seen or mid not in by_id:continue
+            seen.add(mid)
+            parent=by_id[mid].get('in_reply_to')
+            if parent:
+                candidates.discard(parent)
+                needed.append(parent)
+        for mid in candidates:store.delete('message',mid,sid,con)
+        return len(candidates)

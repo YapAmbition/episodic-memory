@@ -18,22 +18,11 @@ from .errors import MemoryError
 from .schemas import EventInput, PersonInput, SpaceInput
 from .service import MemoryService
 from .space_copy import SpaceCopier, CopyInput, REFERENCE_KINDS
-from .store import iso, dt
-from .reinforcements import portable_event
+from .store import iso
 
 MAX_BYTES = 32 * 1024 * 1024
-KINDS = ('person', 'conversation', 'message', 'event', 'fragment', 'astrbot_pins', 'astrbot_person_alias')
+from .migration_compensation import KINDS, RECOVERY, OPAQUE, compensate, recovery_record, copy_audit_evidence
 TABLES = ('records', 'versions', 'copy_identity')
-COMMON = {'id', 'space_id', 'version', 'origin_id'}
-FIELDS = {
- 'person': set(PersonInput.model_fields),
- 'conversation': {'person_id','kind','title','created_at','updated_at'},
- 'message': {'person_id','conversation_id','role','content','at','sender_id','in_reply_to','mention_ids','processed','processed_at','maintenance_offset','content_sha256','content_chars','content_cleared_at','retention','expires_at','fixture','source'},
- 'event': set(EventInput.model_fields) | {'frozen','reinforcements','updated_at','split_from','split_into','merged_into','archive_conversation_id'},
- 'fragment': {'event_id','kind','content','source_ids','recorded_at','source_ranges'},
- 'astrbot_pins': {'event_ids'},
- 'astrbot_person_alias': {'platform','uid','person_id'},
-}
 
 def encoded(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False).encode()
@@ -42,9 +31,6 @@ def formatted_json(value):
     return (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + '\n').encode('utf-8')
 
 def digest(value): return hashlib.sha256(encoded(value)).hexdigest()
-
-def clean(kind, value):
-    return {k:v for k,v in value.items() if k in COMMON | FIELDS[kind]}
 
 def rows(con, sid):
     return {table:[dict(r) for r in con.execute(f'SELECT * FROM {table} WHERE space_id=? ORDER BY '+('kind,rowid' if table=='records' else 'id' if table=='versions' else 'kind,origin_id'), (sid,))] for table in TABLES}
@@ -107,25 +93,20 @@ class Transfers:
             if con.execute('SELECT count(*) FROM records WHERE space_id=?',(sid,)).fetchone()[0]>100000:
                 raise MemoryError(413,'空间超过 100000 条记录，当前迁移包暂不支持')
             records=[]
-            active={e['id'] for e in self.store.list('event',sid,con) if e.get('status')!='archived'}
             for kind in KINDS:
                 for item in self.store.list(kind,sid,con):
-                    value=clean(kind,item)
-                    if kind=='astrbot_pins':
-                        value['event_ids']=list(dict.fromkeys(e for e in value['event_ids'] if e in active))
+                    value=copy.deepcopy(item)
                     records.append({'kind':kind,'value':value})
             revisions=[dict(r) for r in con.execute('SELECT * FROM versions WHERE space_id=? ORDER BY id',(sid,))]
-            for rev in revisions: rev['data']=clean('event',json.loads(rev['data']))
-            ids={(r['kind'],r['value']['id']) for r in records} | {('revision',r['id']) for r in revisions}
-            origins=[dict(r) for r in con.execute('SELECT * FROM copy_identity WHERE space_id=? ORDER BY kind,origin_id',(sid,)) if (r['kind'],r['record_id']) in ids]
-        # Reinforcement survives its original chat message. Preserve provenance
-        # explicitly rather than inventing a replacement message or losing the timestamp.
-        message_ids={r['value']['id'] for r in records if r['kind']=='message'}
-        for row in records:
-            if row['kind']=='event':row['value']=portable_event(row['value'],message_ids)
-        for rev in revisions:rev['data']=portable_event(rev['data'],message_ids)
+            for rev in revisions: rev['data']=json.loads(rev['data'])
+            records.extend(copy_audit_evidence(sid,self.store.list('space_copy',sid,con)))
+            origins=[dict(r) for r in con.execute('SELECT * FROM copy_identity WHERE space_id=? ORDER BY kind,origin_id',(sid,))]
+        records,revisions=compensate(records,revisions,sid)
+        available={(r['kind'],r['value']['id']) for r in records}|{('revision',r['id']) for r in revisions}
+        records.extend(recovery_record(sid,'origin',o,['来源映射的记录不存在，保留原映射'],'pending') for o in origins if (o['kind'],o['record_id']) not in available)
+        origins=[o for o in origins if (o['kind'],o['record_id']) in available]
         payload=dict(space={k:space.get(k,'') for k in ('id','name','description')},exported_at=iso(),include_messages=include_messages,records=records,revisions=revisions,origins=origins)
-        package=dict(format='memory-slice',format_version=1,payload=payload,sha256=digest(payload))
+        package=dict(format='memory-slice',format_version=2,payload=payload,sha256=digest(payload))
         if len(formatted_json(package))>MAX_BYTES:raise MemoryError(413,'完整迁移包超过 32 MiB，当前版本暂不支持；请保留原库，不会省略内容')
         self.validate(package)
         return package
@@ -133,100 +114,31 @@ class Transfers:
     def validate(self, package):
         try:
             if len(encoded(package))>MAX_BYTES:raise ValueError('文件超过 32 MiB')
-            if set(package)!={'format','format_version','payload','sha256'} or package['format']!='memory-slice' or type(package['format_version']) is not int or package['format_version']!=1:
+            if set(package)!={'format','format_version','payload','sha256'} or package['format']!='memory-slice' or type(package['format_version']) is not int or package['format_version'] not in (1,2):
                 raise ValueError('不支持的迁移包格式或版本，请升级程序')
-            p=package['payload']
+            p=copy.deepcopy(package['payload'])
             if digest(p)!=package['sha256']:raise ValueError('文件校验失败，内容可能损坏')
             if set(p)!={'space','exported_at','include_messages','records','revisions','origins'}:raise ValueError('包结构不完整')
             SpaceInput.model_validate({k:v for k,v in p['space'].items() if k!='id'})
-            if type(p['include_messages']) is not bool:raise ValueError('无效聊天正文标记')
-            if not p['include_messages']:raise ValueError('这是旧版省略聊天正文的包，请在源机器重新导出完整迁移包')
-            dt(p['exported_at'])
+            if p['include_messages'] is not True:raise ValueError('这是旧版省略聊天正文的包，请在源机器重新导出完整迁移包')
+            from .migration_compensation import valid_id, valid_time
+            sid=p['space']['id']
+            if not valid_id(sid) or not valid_time(p['exported_at']):raise ValueError('缺少源空间 ID 或导出时间')
             if any(not isinstance(p[k],list) for k in ('records','revisions','origins')):raise ValueError('记录必须为列表')
-            sid=p['space']['id']; indexes={k:{} for k in KINDS}
-            if not isinstance(sid,str) or not sid:raise ValueError('缺少源空间 ID')
             if sum(len(p[k]) for k in ('records','revisions','origins'))>100000:raise ValueError('记录超过 100000 条')
-            def identity(v):
-                if not isinstance(v,str) or not v or len(v)>300:raise ValueError('无效的记录 ID')
-            for row in p['records']:
-                kind,value=row['kind'],row['value']
-                if kind not in KINDS or clean(kind,value)!=value:raise ValueError('未知记录类型或字段')
-                required_fields={'message':('conversation_id','role','content','at'), 'conversation':('title','created_at'), 'fragment':('event_id','content','source_ids','recorded_at'), 'astrbot_pins':('event_ids',), 'astrbot_person_alias':('platform','uid','person_id')}
-                for required in required_fields.get(kind,()):
-                    if required not in value or value[required] is None:raise ValueError('记录缺少字段：'+required)
-                identity(value['id'])
-                if value.get('space_id',sid)!=sid:raise ValueError('记录不属于源空间')
-                if value['id'] in indexes[kind]:raise ValueError('重复记录 ID')
-                if 'origin_id' in value:identity(value['origin_id'])
-                if type(value.get('version',1)) is not int or value.get('version',1)<1:raise ValueError('无效版本号')
-                for field in ('created_at','updated_at','at','learned_at','occurred_at','processed_at','content_cleared_at','expires_at','recorded_at'):
-                    if value.get(field) is not None:dt(value[field])
-                for field in ('person_ids','source_ids','mention_ids','event_ids','split_into'):
-                    if field in value and (not isinstance(value[field],list) or any(not isinstance(v,str) for v in value[field])):raise ValueError('无效关联列表')
-                indexes[kind][value['id']]=value
-                if kind=='event':
-                    EventInput.model_validate_json(encoded({k:v for k,v in value.items() if k in EventInput.model_fields}),strict=True)
-                    for required in ('anchors','links','status','person_ids','source_ids','salience','learned_at'):
-                        if required not in value:raise ValueError('事件缺少字段：'+required)
-                    if not isinstance(value.get('reinforcements',[]),list):raise ValueError('无效强化记录')
-                    for reinforcement in value.get('reinforcements',[]):
-                        identity(reinforcement.get('message_id') or reinforcement.get('unavailable_message_id'));dt(reinforcement['at'])
-                    if not isinstance(value.get('frozen',False),bool):raise ValueError('无效冻结状态')
-                elif kind=='person':PersonInput.model_validate_json(encoded({k:v for k,v in value.items() if k in PersonInput.model_fields}),strict=True)
-                elif kind=='message':
-                    if value['role'] not in ('user','assistant') or not isinstance(value['content'],str):raise ValueError('无效消息')
-                    if type(value.get('fixture',False)) is not bool:raise ValueError('无效消息标记')
-                    if type(value.get('processed',False)) is not bool:raise ValueError('无效消息消费状态')
-                    offset=value.get('maintenance_offset',0)
-                    if type(offset) is not int or offset<0:raise ValueError('无效消息消费进度')
-                elif kind=='conversation':
-                    if not isinstance(value['title'],str) or value.get('kind','direct') not in ('direct','group'):raise ValueError('无效会话')
-                elif kind=='fragment':
-                    if not isinstance(value['content'],str):raise ValueError('无效片段正文')
-                    if not isinstance(value.get('source_ranges',[]),list):raise ValueError('无效片段来源')
-                    for source_range in value.get('source_ranges',[]):
-                        if not isinstance(source_range,dict):raise ValueError('无效片段来源范围')
-                        identity(source_range['message_id'])
-                elif kind=='astrbot_person_alias':
-                    identity(value['platform']);identity(value['uid'])
-            def references(value,key='',historical=False):
-                if isinstance(value,dict):
-                    for k,v in value.items():references(v,k,historical)
-                elif isinstance(value,list):
-                    for v in value:references(v,key,historical)
-                elif key in REFERENCE_KINDS and value is not None:
-                    if not isinstance(value,str):raise ValueError('关联 ID 类型错误')
-                    if value not in indexes[REFERENCE_KINDS[key]] and not historical and key not in ('split_from','split_into','merged_into','archive_conversation_id'):
-                        raise ValueError('关联指向缺失记录：'+value+'（字段 '+key+'）')
-            for row in p['records']:
-                references(row['value'])
-                if row['kind']=='event':
-                    for eid in re.findall(r'\[\[([A-Za-z0-9_-]+)\]\]',row['value'].get('body',row['value'].get('content',''))):
-                        if eid not in indexes['event']:raise ValueError('正文关联指向缺失事件：'+eid)
-            seen=set()
-            for rev in p['revisions']:
-                identity(rev['id'])
-                if rev['id'] in seen or rev['event_id'] not in indexes['event'] or rev['space_id']!=sid:raise ValueError('无效历史版本')
-                dt(rev['saved_at'])
-                seen.add(rev['id'])
-                if clean('event',rev['data'])!=rev['data']:raise ValueError('无效历史字段')
-                EventInput.model_validate({k:v for k,v in rev['data'].items() if k in EventInput.model_fields})
-                references(rev['data'],historical=True)
-            aliases=set()
-            for origin in p['origins']:
-                kind=origin['kind'];rid=origin['record_id'];identity(origin['origin_id'])
-                if origin['space_id']!=sid or (rid not in seen if kind=='revision' else kind not in indexes or rid not in indexes[kind]):raise ValueError('来源映射损坏')
-                key=(kind,origin['origin_id'])
-                if key in aliases:raise ValueError('来源映射重复')
-                aliases.add(key)
-            # Normalize a detached payload only after authenticating the original checksum.
-            # Preserve the uploaded package for idempotency and future exports.
-            p=copy.deepcopy(p)
-            from .message_identity import complete_person_ids
-            values={kind:{(sid,r['value']['id']):dict(r['value'],space_id=sid) for r in p['records'] if r['kind']==kind} for kind in ('message','conversation','person')}
-            complete_person_ids(values['message'],values['conversation'],set(values['person']))
-            for row in p['records']:
-                if row['kind']=='message':row['value']=values['message'][(sid,row['value']['id'])]
+            p['records'],p['revisions']=compensate(p['records'],p['revisions'],sid)
+            available={(r['kind'],r['value']['id']) for r in p['records']}|{('revision',r['id']) for r in p['revisions']}
+            origins=[];seen=set()
+            for o in p['origins']:
+                if not isinstance(o,dict) or o.get('space_id')!=sid or not valid_id(o.get('origin_id')) or not valid_id(o.get('record_id')):
+                    raise ValueError('来源映射损坏')
+                key=(o['kind'],o['origin_id'])
+                if key in seen:raise ValueError('来源映射重复')
+                seen.add(key)
+                if (o['kind'],o['record_id']) in available:origins.append(o)
+                else:
+                    p['records'].append(recovery_record(sid,'origin',o,['来源映射的记录不存在，保留原映射'],'pending'))
+            p['origins']=origins
             return p
         except (KeyError,TypeError,ValueError,AttributeError,RecursionError,ValidationError) as exc:
             raise MemoryError(422,'迁移包校验失败：'+str(exc)[:300]) from exc
@@ -280,6 +192,7 @@ class Transfers:
             maps={kind:{r['value']['id']:'stage_'+hashlib.sha256((sid+kind+r['value']['id']).encode()).hexdigest()[:32] for r in payload['records'] if r['kind']==kind} for kind in KINDS}
             maps['revision']={r['id']:'stage_rev_'+hashlib.sha256((sid+r['id']).encode()).hexdigest()[:32] for r in payload['revisions']}
             def rewrite(value,key=''):
+                if key in OPAQUE:return copy.deepcopy(value)
                 if isinstance(value,dict):return {k:rewrite(v,k) for k,v in value.items()}
                 if isinstance(value,list):return [rewrite(v,key) for v in value]
                 if key in REFERENCE_KINDS and isinstance(value,str):return maps[REFERENCE_KINDS[key]].get(value,value)
@@ -289,7 +202,7 @@ class Transfers:
             with scratch.store.connect() as con:
                 scratch.store.put('space',dict(id=sid,name=payload['space']['name'],description='迁移暂存'),sid,con=con)
                 for row in payload['records']:
-                    kind,old=row['kind'],row['value'];v=rewrite(old)
+                    kind,old=row['kind'],row['value'];v=copy.deepcopy(old) if kind==RECOVERY else rewrite(old)
                     v.update(id=maps[kind][old['id']],space_id=sid,origin_id=old.get('origin_id',old['id']))
                     if kind=='message':v['content']=old['content']
                     con.execute('INSERT INTO records VALUES(?,?,?,?,?)',(kind,v['id'],sid,json.dumps(v,ensure_ascii=False),old.get('version',1)))

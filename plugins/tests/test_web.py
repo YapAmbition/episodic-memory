@@ -18,6 +18,10 @@ FRONTEND = Path(PACKAGE.name) / "astrbot_plugin_memory_slice" / "frontend"
 class WebTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.tmp = tempfile.TemporaryDirectory()
+        # Static-serving tests do not require building a distributable plugin ZIP.
+        (FRONTEND/"assets").mkdir(parents=True, exist_ok=True)
+        if not (FRONTEND/'index.html').exists():
+            (FRONTEND/'index.html').write_text('<!doctype html><title>Memory Slice test</title>')
         self.runtime = Runtime(Host(), {"auto_maintain": False}, self.tmp.name)
         await self.runtime.start()
         self.record = await self.runtime.ingest(Event())
@@ -41,6 +45,28 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         await self.runtime.close()
         self.tmp.cleanup()
+
+    async def test_recovery_records_are_authenticated_readonly_and_portable(self):
+        core=self.runtime.core
+        message=core.store.list('message',self.sid)[0]
+        core.store.put('message',dict(message,role='unknown',content='需要保留的原始正文'),self.sid)
+        destination=(await self.runtime.bind(Event(platform='recovery-target')))['space_id']
+        body={'target_space_id':destination}
+        plan=await self.client.post(self.base+'/copy/preview',json=body)
+        self.assertGreater(plan.json()['compensation']['pending'],0)
+        body['preview_token']=plan.json()['preview_token']
+        copied=await self.client.post(self.base+'/copy',json=body)
+        self.assertEqual(copied.status_code,200,copied.text)
+        url='/api/v1/spaces/'+destination+'/recovery'
+        denied=await self.client.get(url,headers={'Authorization':'Bearer wrong'})
+        self.assertEqual(denied.status_code,401)
+        response=await self.client.get(url+'?limit=1')
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(len(response.json()['items']),1)
+        items=(await self.client.get(url)).json()['items']
+        self.assertTrue(any(x['status']=='pending' and x['payload'].get('content')=='需要保留的原始正文' for x in items))
+        self.assertEqual((await self.client.get(url+'?limit=1000')).status_code,422)
+        self.assertEqual((await self.client.delete(url)).status_code,405)
 
     async def test_transfer_authenticated_roundtrip(self):
         self.runtime.core.create_event(self.sid, EventInput(title='迁移约定',body='下周一起散步'))

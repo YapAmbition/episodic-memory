@@ -122,6 +122,51 @@ class TransferTests(unittest.TestCase):
         self.assertEqual(self.source.store.get('message',message['id'])['retention'],'permanent')
         self.exporter.export(self.sid)
 
+    def test_missing_reply_roundtrip_copy_and_legacy_input_preserve_provenance(self):
+        from memory_slice.space_copy import SpaceCopier,CopyInput
+        missing='msg_4b4ee37965a1'
+        self.source.store.put('message',dict(self.message,in_reply_to=missing),self.sid)
+        original=self.source.store.get('message',self.message['id'])
+        self.pkg=self.exporter.export(self.sid)
+        self.assertEqual(self.source.store.get('message',self.message['id']),original)
+        for legacy in (False,True):
+            package=copy.deepcopy(self.pkg)
+            if legacy:
+                row=next(r['value'] for r in package['payload']['records'] if r['kind']=='message')
+                row['in_reply_to']=row.pop('unavailable_in_reply_to')
+                package['sha256']=digest(package['payload'])
+            before=copy.deepcopy(package)
+            body=ImportInput(package=package,operation_id=f'reply-provenance-{legacy}',new_space_name='回复来源')
+            plan=self.importer.preview(body)
+            result=self.importer.commit(body.model_copy(update={'preview_token':plan['preview_token']}))
+            messages=self.target.store.list('message',result['space_id'])
+            self.assertEqual(len(messages),1)
+            self.assertEqual(messages[0]['content'],self.message['content'])
+            self.assertIsNone(messages[0]['in_reply_to'])
+            self.assertEqual(messages[0]['unavailable_in_reply_to'],missing)
+            self.importer.export(result['space_id'])
+            self.assertEqual(package,before)
+        target=self.source.add_space(SpaceInput(name='直接复制'))['id']
+        copier=SpaceCopier(self.source);body=CopyInput(target_space_id=target)
+        plan=copier.preview(self.sid,body);copier.copy(self.sid,body.model_copy(update={'preview_token':plan['preview_token']}))
+        copied=self.source.store.list('message',target)[0]
+        self.assertEqual(copied['unavailable_in_reply_to'],missing)
+        self.assertEqual(self.source.store.get('message',self.message['id']),original)
+
+    def test_buffer_cleanup_keeps_parent_of_live_reply_then_expires_chain(self):
+        from memory_slice.focus import cleanup_buffer
+        from memory_slice.store import iso,utcnow
+        from datetime import timedelta
+        cid=self.message['conversation_id'];pid=self.message['person_id']
+        parent=self.source.post_message(self.sid,cid,MessageInput(role='user',content='父消息',sender_id=pid))
+        child=self.source.post_message(self.sid,cid,MessageInput(role='user',content='回复',sender_id=pid,in_reply_to=parent['id']))
+        self.source.store.put('message',dict(parent,retention='buffer',expires_at='2000-01-01T00:00:00+00:00'),self.sid)
+        self.source.store.put('message',dict(child,retention='buffer',expires_at=iso(utcnow()+timedelta(days=1))),self.sid)
+        self.assertEqual(cleanup_buffer(self.source.store,self.sid,self.source.config_for(self.sid)),0)
+        self.exporter.export(self.sid)
+        self.source.store.put('message',dict(child,retention='buffer',expires_at='2000-01-01T00:00:00+00:00'),self.sid)
+        self.assertEqual(cleanup_buffer(self.source.store,self.sid,self.source.config_for(self.sid)),2)
+
     def test_roundtrip_independent_repeat_and_backup(self):
         before=self.state();b,p=self.preview(self.body())
         self.assertEqual(before,self.state())
@@ -153,12 +198,11 @@ class TransferTests(unittest.TestCase):
         self.assertNotEqual(result['space_id'],self.sid)
         self.assertEqual(len(self.source.spaces()),2)
         self.assertEqual(self.source.store.get('event',self.event['id'])['space_id'],self.sid)
-    def test_corruption_unknown_version_missing_reference_rejected(self):
+    def test_corruption_unknown_version_rejected(self):
         original=self.state()
         for change,rehash in ((lambda p:p.update(format_version=999),False),
             (lambda p:p['payload']['space'].update(name='tampered'),False),
-            (lambda p:p['payload']['records'].append({'kind':'model','value':{'id':'bad','api_key':'secret'}}),True),
-            (lambda p:next(r['value'] for r in p['payload']['records'] if r['kind']=='event').update(person_ids=['missing']),True)):
+            (lambda p:p['payload']['records'].append({'kind':'model','value':{'id':'bad','api_key':'secret'}}),True)):
             package=copy.deepcopy(self.pkg);change(package)
             if rehash:package['sha256']=digest(package['payload'])
             with self.assertRaises(MemoryError):self.importer.preview(self.body().model_copy(update={'package':package}))

@@ -296,6 +296,16 @@ def create_app(
             "simulator_enabled": not managed,
         }
 
+    @api.get('/spaces/{sid}/recovery', tags=['Spaces'])
+    def migration_recovery(sid: str, offset: int = 0, limit: int = 50):
+        from .migration_compensation import RECOVERY
+        store.get('space',sid)
+        if offset<0 or not 1<=limit<=200:raise HTTPException(422,'无效分页范围')
+        with store.connect() as con:
+            total=con.execute('SELECT count(*) FROM records WHERE kind=? AND space_id=?',(RECOVERY,sid)).fetchone()[0]
+            items=con.execute('SELECT data FROM records WHERE kind=? AND space_id=? ORDER BY rowid LIMIT ? OFFSET ?',(RECOVERY,sid,limit,offset)).fetchall()
+        return {'total':total,'items':[json.loads(row['data']) for row in items]}
+
     @api.get('/spaces/{sid}/transfer', tags=['Spaces'])
     def export_transfer(sid: str, include_messages: bool = True):
         package = transfers.export(sid, include_messages)

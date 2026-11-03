@@ -1,4 +1,5 @@
 """Independent, repeatable space copies with stable provenance and atomic writes."""
+import copy
 import hashlib
 import json
 import re
@@ -12,6 +13,9 @@ from .integrations.routing import alias_id
 from .pinned_context import pin_size
 from .store import iso, new_id
 from .reinforcements import portable_event
+from .message_identity import portable_message
+
+from .migration_compensation import KINDS, RECOVERY, OPAQUE, compensate, summary, recovery_record, copy_audit_evidence
 
 CONTENT_KINDS = ('person', 'conversation', 'message', 'event')
 REFERENCE_KINDS = {
@@ -60,6 +64,16 @@ class SpaceCopier:
         data = {sid: {} for sid in (source,target)}
         for row in rows:
             data[row['space_id']].setdefault(row['kind'], {})[row['id']] = dict(json.loads(row['data']),version=row['version'])
+        source_records=[{'kind':kind,'value':v} for kind,items in data[source].items() if kind in KINDS for v in items.values()]
+        source_records.extend(copy_audit_evidence(source,data[source].get('space_copy',{}).values()))
+        source_history=[dict(r,data=json.loads(r['data'])) for r in revisions if r['space_id']==source]
+        normalized,history=compensate(source_records,source_history,source)
+        available={(r['kind'],r['value']['id']) for r in normalized}|{('revision',r['id']) for r in history}
+        normalized.extend(recovery_record(source,'origin',o,['来源映射的记录不存在，保留原映射'],'pending') for o in provenance if o['space_id']==source and (o['kind'],o['record_id']) not in available)
+        for kind in KINDS:data[source][kind]={}
+        for row in normalized:data[source][row['kind']][row['value']['id']]=row['value']
+        revisions=[r for r in revisions if r['space_id']!=source]+[dict(r,data=json.dumps(r['data'],ensure_ascii=False)) for r in history]
+        compensation=summary(normalized)
         cids = set(data[source].get('conversation', {})) | set(data[target].get('conversation', {}))
         if any(lock.locked() for cid,lock in self.core.chat_locks.items() if cid in cids):
             raise MemoryError(409, '这两个空间中有回复正在生成，请稍后复制')
@@ -132,7 +146,7 @@ class SpaceCopier:
                     event=data[sid].get('event',{}).get(eid)
                     if event:candidates.append(dict(id=eid,title=event['title'],from_source=sid==source))
         budget=self.pin_budget if self.pin_budget is not None else self.core.config_for(target)['context_char_budget']
-        plan=dict(source=spaces[0],target=spaces[1],preview_token=token,
+        plan=dict(source=spaces[0],target=spaces[1],preview_token=token,compensation=compensation,
             counts={kind:len(data[source].get(kind,{})) for kind in CONTENT_KINDS},
             conflicts=conflicts,new_events=len(mapping['event'])-len(conflicts),
             restorable_messages=sum(bool(m.get('content')) and omitted_message(data[target].get('message',{}).get(mapping['message'][mid])) for mid,m in data[source].get('message',{}).items()),
@@ -148,6 +162,14 @@ class SpaceCopier:
     def copy(self, source, body):
         target=body.target_space_id
         try:
+            from .transfer import verified_backup, backup_filename
+            backup=self.store.directory/'backups'/backup_filename('copy',target,source)
+            with self.store.connect() as reader:
+                reader.execute('BEGIN')
+                before_plan=self._plan(source,target,reader)[0]
+                if not body.preview_token or before_plan['preview_token']!=body.preview_token:
+                    raise MemoryError(409,'空间数据已变化，请重新预览并确认')
+                verified_backup(reader,backup)
             with self.store.connect() as con:
                 con.execute('PRAGMA busy_timeout=1000');con.execute('BEGIN IMMEDIATE')
                 plan,data,mapping,revisions,origins=self._plan(source,target,con)
@@ -162,22 +184,22 @@ class SpaceCopier:
                         raise MemoryError(409,'目标事件已冻结，不能覆盖，请先解冻或选择跳过：'+conflict['target_title'])
 
                 def rewrite(value,key='',strict=False):
+                    if key in OPAQUE:return copy.deepcopy(value)
                     if isinstance(value,dict):
                         return {k:rewrite(v,k,strict) for k,v in value.items()}
                     if isinstance(value,list):
-                        return [v for v in (rewrite(v,key,strict) for v in value) if v is not None]
+                        return [rewrite(v,key,strict) for v in value]
                     if key=='space_id' and value==source:return target
                     if key in REFERENCE_KINDS and isinstance(value,str):
                         mapped=mapping[REFERENCE_KINDS[key]].get(value)
                         if not mapped and strict and key not in ('split_from','split_into','merged_into','archive_conversation_id'):
                             raise MemoryError(422,'源记录引用了缺失的数据，无法完整复制：'+value)
-                        return mapped
+                        return mapped if mapped is not None else value
                     if key in ('body','content') and isinstance(value,str):
                         def link(match):
                             eid=match[1]
                             if eid in mapping['event']:return '[['+mapping['event'][eid]+']]'
-                            if strict:raise MemoryError(422,'源事件正文引用了缺失事件：'+eid)
-                            return '[未复制的历史事件]'
+                            return match[0]
                         # Chat content is preserved literally; only event/fragment bodies call this.
                         return re.sub(r'\[\[([A-Za-z0-9_-]+)\]\]',link,value)
                     return value
@@ -208,18 +230,39 @@ class SpaceCopier:
                 if pin_size(pin_events)>plan['pin_limit']:
                     raise MemoryError(422,'复制后的常驻内容超过字符上限，请减少选择或调整事件')
 
+                # Only advance progress when the related event results are present.
+                # A skipped but identical event is already present; a skipped changed
+                # event blocks its own evidence messages, not unrelated conversations.
+                blocked_progress=set()
+                progress_safe=not any(r.get('status')=='pending' for r in data[source].get(RECOVERY,{}).values())
+                event_fields=('title','body','person_ids','source_ids','anchors','links','status','salience','salience_reason','occurred_at','learned_at')
+                for eid,action in actions.items():
+                    if action!='skip':continue
+                    source_event=data[source]['event'][eid]
+                    expected=rewrite(source_event)
+                    previous=data[target]['event'][mapping['event'][eid]]
+                    if all(expected.get(k)==previous.get(k) for k in event_fields):continue
+                    evidence=set(source_event.get('source_ids',[]))
+                    for fragment in data[source].get('fragment',{}).values():
+                        if fragment.get('event_id')==eid:
+                            evidence.update(fragment.get('source_ids',[]))
+                            evidence.update(x['message_id'] for x in fragment.get('source_ranges',[]))
+                    if evidence:blocked_progress.update(evidence)
+                    else:progress_safe=False
                 written={kind:set(data[target].get(kind,{})) for kind in CONTENT_KINDS}
                 counts=Counter()
                 for kind in CONTENT_KINDS[:3]:
                     for rid,item in data[source].get(kind,{}).items():
                         dest=mapping[kind][rid]
                         if dest not in written[kind]:
-                            value=rewrite(item)
+                            value=rewrite(portable_message(item,data[source].get('message',{})) if kind=='message' else item)
                             value.update(id=dest,space_id=target,origin_id=item.get('origin_id',rid))
                             # Copies are ordinary local conversations, never live host bindings.
                             if kind=='conversation':
                                 value.pop('external_thread_id',None);value.pop('integration',None)
-                                if value.get('title','').startswith('agent-session:'):value['title']='副本 · '+value['title']
+                                if value.get('title','').startswith('agent-session:'):
+                                    value.setdefault('migration',{})['original_conversation_title']=value['title']
+                                    value['title']=('副本 · '+value['title'])[:100]
                             if kind=='message':
                                 value['content']=item['content'];value.pop('recall_id',None)
                             self.store.put(kind,value,target,con=con)
@@ -231,6 +274,22 @@ class SpaceCopier:
                                 if field in item:value[field]=item[field]
                             self.store.put('message',value,target,con=con)
                             counts['restored_messages']+=1
+                        elif kind=='message' and progress_safe and rid not in blocked_progress:
+                            previous=data[target].get('message',{}).get(dest)
+                            if (previous and not previous.get('processed') and not previous.get('content_cleared_at')
+                                    and item.get('content') and previous.get('content')==item['content']
+                                    and previous.get('role')==item.get('role')
+                                    and previous.get('person_id')==mapping['person'].get(item.get('person_id'))
+                                    and previous.get('conversation_id')==mapping['conversation'].get(item.get('conversation_id'))):
+                                old_offset=previous.get('maintenance_offset',0)
+                                new_offset=len(item['content']) if item.get('processed') else item.get('maintenance_offset',0)
+                                if type(old_offset) is int and type(new_offset) is int and (new_offset>old_offset or (item.get('processed') and new_offset==old_offset)):
+                                    value=dict(previous,maintenance_offset=new_offset,processed=bool(item.get('processed')))
+                                    if value['processed']:
+                                        # Start a fresh retention grace period in the target.
+                                        value['processed_at']=iso()
+                                    self.store.put('message',value,target,con=con)
+                                    counts['advanced_messages']+=1
                         remember(kind,item,dest)
                 # Preserve all explicit account identities after people are deduplicated.
                 accounts=[(p['platform'],p['external_uid'],p['id']) for p in data[source].get('person',{}).values() if p.get('platform') and p.get('external_uid')]
@@ -268,7 +327,7 @@ class SpaceCopier:
                         history_origins=origins(source,'revision',{'id':rev['id']})
                         found=con.execute("SELECT 1 FROM copy_identity c JOIN versions v ON v.id=c.record_id AND v.space_id=c.space_id WHERE c.space_id=? AND c.kind='revision' AND c.origin_id IN ("+','.join('?' for _ in history_origins)+')',(target,*history_origins)).fetchone()
                         if found:continue
-                        revision_id=new_id('rev');snapshot=rewrite(portable_event(json.loads(rev['data']),data[source].get('message',{})))
+                        revision_id=new_id('rev');snapshot=rewrite(json.loads(rev['data']))
                         snapshot.update(id=dest,space_id=target,origin_id=event.get('origin_id',eid))
                         con.execute('INSERT INTO versions VALUES(?,?,?,?,?)',(revision_id,dest,target,json.dumps(snapshot,ensure_ascii=False),rev['saved_at']))
                         remember('revision',{'id':rev['id']},revision_id)
@@ -281,13 +340,34 @@ class SpaceCopier:
                         vector=vectors.get(old_chunk['id'])
                         if vector and vector.get('signature')==signature and vector.get('hash')==old_chunk['hash']==new_chunk['hash']:
                             self.store.put('embedding_vector',dict(vector,id=new_chunk['id'],event_id=dest),target,con=con)
+                # Opaque recovery records survive copies and repeated exports verbatim.
+                # Stable provenance prevents duplicate evidence on repeat imports.
+                existing_recovery={r.get('origin_id',r['id']):r for r in data[target].get(RECOVERY,{}).values()}
+                for item in data[source].get(RECOVERY,{}).values():
+                    origin=item.get('origin_id',item['id'])
+                    previous=existing_recovery.get(origin)
+                    if previous:
+                        evidence=lambda r:{k:r.get(k) for k in ('payload','record_kind','status','issues')}
+                        if evidence(previous)==evidence(item):continue
+                        # Never discard different historical evidence because a package
+                        # reused its provenance ID. Keep both under a stable fork ID.
+                        from .migration_compensation import fingerprint
+                        origin='recovery_conflict_'+fingerprint([origin,evidence(item)])[:32]
+                        if origin in existing_recovery:
+                            if evidence(existing_recovery[origin])==evidence(item):continue
+                            raise MemoryError(409,'恢复资料身份冲突，未修改目标数据')
+                    value=copy.deepcopy(item)
+                    value.update(id=new_id('recovery'),space_id=target,origin_id=origin)
+                    self.store.put(RECOVERY,value,target,con=con)
+                    existing_recovery[origin]=value
+                    counts['recovery']+=1
                 # Keep target pins by default. Selecting copied pins is an explicit opt-in.
                 if pins!=plan['selected_pins']:
                     self.store.put('astrbot_pins',dict(id=target,event_ids=pins),target,con=con)
                 self.store.put('space_copy',dict(id=new_id('copy'),source_space_id=source,target_space_id=target,at=iso(),
                     counts=dict(counts),event_choices=actions,event_map=mapping['event'],previous_fragments=overwritten_fragments),target,con=con)
             self.core.embeddings.state(target)['generation']+=1
-            return dict(space_id=target,source_space_id=source,counts=dict(counts),event_map=mapping['event'],pinned_event_ids=pins)
+            return dict(space_id=target,source_space_id=source,counts=dict(counts),event_map=mapping['event'],pinned_event_ids=pins,compensation=plan['compensation'],backup_path=str(backup.resolve()))
         except sqlite3.OperationalError as exc:
             if getattr(exc,'sqlite_errorcode',0)&255 not in (sqlite3.SQLITE_BUSY,sqlite3.SQLITE_LOCKED):raise
             raise MemoryError(503,'数据库暂时忙，复制未完成，原数据未改动，请稍后重试') from exc
