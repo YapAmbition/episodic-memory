@@ -1,12 +1,12 @@
 # 记忆切片 · Memory Slice for AstrBot
 
-插件版本 **0.3.14**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
+插件版本 **0.3.15**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
 
 ## 安装
 
 要求 **AstrBot >= 4.24.0**，使用其内置 LLM/Agent 流程。该最低版本来自本轮临时内容块 API；不支持绕过版本限制安装到旧版。外接 Dify 等未触发标准请求钩子的执行器尚未适配。
 
-1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.14.zip`。
+1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.15.zip`。
 2. 如果使用手工安装，将 ZIP 中的 `astrbot_plugin_memory_slice` 文件夹放到 AstrBot 的 `data/plugins/` 下；在 AstrBot 的 Python 环境安装该目录的 `requirements.txt`，然后重载插件。
 3. 插件配置中选择已有聊天模型；留空时跟随当前会话。无需填写新的 API Key 或模型地址。
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
@@ -139,7 +139,7 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 构建脚本先在本机执行 React 生产构建（首次自动执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
-默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.14.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
+默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.15.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 
 当前通过 25 项插件测试、113 项核心/HTTP 回归测试和 17 项前端工具测试。新增覆盖网页鉴权、同实例共享、只读配置、事件编辑、整理、端口释放及重启。插件测试使用真实共享核心、SQLite 和模拟 AstrBot 宿主，覆盖事件整理/召回、群聊筛选与隔离、重载、去重、超时取消、模型输出截断、临时注入、发送后记录、故障不阻断聊天及包内核心一致性。
 
@@ -269,3 +269,6 @@ if not exist "%TEMP%" mkdir "%TEMP%"
 新导出包为格式版本 2（需要本版或更新版导入），仍兼容读取版本 1 完整包。补偿前记录与历史原始快照随再次导出、复制一起保留，原始资料中的 ID 不会被重写。`GET /api/v1/spaces/{sid}/recovery?offset=0&limit=20` 分页只读查看，仍需控制台令牌。不自动恢复待恢复记录，不猜测角色、归属或消费进度。
 
 0.3.14 修复迁移边界：复制会话标题限制为 100 字并保留原标题；恢复资料重复 ID 按来源分配稳定独立 ID；重复迁移仅在正文一致且相关事件结果到位时推进消费进度，不回退目标进度，完成后重新计算目标正文保留宽限期。发生写入错误时进度与事件一起回滚。
+
+
+0.3.15 应急修复：AstrBot 默认从当前空间全部事件召回，避免跨平台迁移后旧人物关联导致事件被过滤。可开启 `recall_filter_by_focus` 恢复旧版仅关注人物召回；这可能排除已导入的其他人物事件。此开关不改变空间绑定、关注 UID、采集与整理规则，也不改写历史数据。升级后保留原关注 UID/平台配置，无需重新导入；未配置 embedding 时仍使用程序召回，语义匹配能力不等同于向量召回。`/记忆切片` 显示检索范围及当前人物关联事件数量。核心 API 新增 `filter_by_focus`，默认 true，其他接入保持原行为。

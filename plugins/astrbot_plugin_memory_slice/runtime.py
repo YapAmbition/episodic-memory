@@ -394,6 +394,7 @@ class Runtime:
                 record["space_id"],
                 RecallInput(
                     limit=self.recall_limit,
+                    filter_by_focus=bool(self.config.get("recall_filter_by_focus", False)),
                     reply_to_person_id=parent.get("person_id"),
                     person_id=row["person_id"],
                     query=row["content"],
@@ -500,6 +501,10 @@ class Runtime:
         jobs = self.core.jobs(sid)
         last = max(jobs, key=lambda j: j["created_at"]) if jobs else None
         status = f"记忆切片：{len(events)} 件事，{sum(not m['processed'] for m in messages)} 条待整理消息。"
+        focus_id = self.core.config_for(sid)["focus_person_id"]
+        matched = sum(focus_id in e.get("person_ids", []) for e in events) if focus_id else len(events)
+        scope = "仅关注人物" if self.config.get("recall_filter_by_focus", False) else "当前空间全部事件"
+        status += f"\n检索范围：{scope}；当前人物关联 {matched}/{len(events)} 件。"
         pins = self.pins.inspect(sid)
         status += f"\n常驻：{len(pins['event_ids'])}/3 件，占用 {pins['characters']}/{pins['limit']} 字符"
         if pins['errors']:

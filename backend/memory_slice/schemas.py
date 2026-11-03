@@ -165,6 +165,7 @@ class EventInput(StrictModel):
 
 
 class RecallInput(StrictModel):
+    filter_by_focus: bool = True
     limit: Optional[int] = Field(None, ge=1, le=120)
 
     person_id: Optional[str] = None

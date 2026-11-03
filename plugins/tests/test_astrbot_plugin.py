@@ -149,6 +149,45 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = Runtime(self.host, self.config, self.tmp.name)
         await self.runtime.start()
 
+    async def test_migrated_platform_memories_recalled_without_embeddings(self):
+        from astrbot_plugin_memory_slice.memory_slice.space_copy import SpaceCopier, CopyInput
+        from astrbot_plugin_memory_slice.memory_slice.schemas import RecallInput
+        await self.reset(focus_uid="42", retrieval_mode="hybrid", embedding_enabled=False)
+        old = await self.runtime.ingest(Event(platform="snowluma"))
+        new = await self.runtime.ingest(Event(platform="napcat"))
+        sid, target = old["space_id"], new["space_id"]
+        focus = self.runtime.core.config_for(sid)["focus_person_id"]
+        original = self.runtime.core.create_event(sid, EventInput(
+            title="陨石一号烤面包失败", body="陨石一号烤面包失败，面包烤成黑色。",
+            person_ids=[focus], salience=1, anchors={"details": ["陨石一号"]}))
+        copier = SpaceCopier(self.runtime.core)
+        preview = copier.preview(sid, CopyInput(target_space_id=target))
+        result = copier.copy(sid, CopyInput(target_space_id=target, preview_token=preview["preview_token"]))
+        copied = result["event_map"][original["id"]]
+        before = self.runtime.core.store.get("event", copied, target)
+        # The existing core default still filters old-platform identities.
+        strict = await self.runtime.core.retrieve(target, RecallInput(query="陨石一号", retrieval_mode="local"))
+        self.assertNotIn(copied, [item["event_id"] for item in strict["items"]])
+        # A newly created target event must not mask the migrated event.
+        self.runtime.core.create_event(target, EventInput(title="今天下雨", body="今天下雨了",
+            person_ids=[self.runtime.core.config_for(target)["focus_person_id"]]))
+        for mode in ("local", "hybrid"):
+            self.runtime.config["retrieval_mode"] = mode
+            wire = await self.runtime.recall(Event("陨石一号", platform="napcat", mid=mode))
+            self.assertIn(copied, wire)
+            self.assertNotIn(original["id"], wire)  # no cross-space lookup
+        self.assertIn("当前空间全部事件", await self.runtime.status(Event(platform="napcat")))
+        self.assertEqual(self.runtime.core.store.get("event", copied, target)["body"], before["body"])
+        self.assertEqual(self.runtime.core.store.get("event", copied, target)["person_ids"], before["person_ids"])
+        await self.reset(recall_filter_by_focus=True)
+        self.assertEqual((await self.runtime.bind(Event(platform="napcat")))["space_id"], target)
+        wire = await self.runtime.recall(Event("陨石一号", platform="napcat", mid="strict"))
+        self.assertNotIn(copied, wire)
+        await self.reset(recall_filter_by_focus=False)
+        self.assertEqual((await self.runtime.bind(Event(platform="napcat")))["space_id"], target)
+        self.assertIn(copied, await self.runtime.recall(Event("陨石一号", platform="napcat", mid="restart")))
+        self.assertEqual(self.host.calls, [])
+
     async def test_space_copy_pins_frozen_routes_and_restart(self):
         from astrbot_plugin_memory_slice.memory_slice.space_copy import SpaceCopier, CopyInput
         old = await self.runtime.ingest(Event(platform='old-qq'))
