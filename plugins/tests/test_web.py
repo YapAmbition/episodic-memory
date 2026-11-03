@@ -46,6 +46,31 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.close()
         self.tmp.cleanup()
 
+    async def test_console_context_includes_old_platform_person(self):
+        from astrbot_plugin_memory_slice.memory_slice.schemas import PersonInput
+        core = self.runtime.core
+        old = core.add_person(self.sid, PersonInput(name="旧人物", platform="snowluma", external_uid="42"))
+        new = core.add_person(self.sid, PersonInput(name="新人物", platform="napcat", external_uid="42"))
+        cfg = core.config_for(self.sid)
+        core.store.put("config", dict(cfg, id=self.sid, focus_person_id=new["id"]), self.sid)
+        event = core.create_event(self.sid, EventInput(title="陨石一号", body="陨石一号烤面包失败了",
+            person_ids=[old["id"]], salience=1, anchors={"details": ["陨石一号"]}))
+        payload = {"query": "陨石一号", "retrieval_mode": "local", "trace": True}
+        previous = await self.client.post(self.base+"/context", json=payload)
+        self.assertEqual(previous.status_code, 200, previous.text)
+        self.assertNotIn(event["id"], previous.json()["context"])
+        spaces = (await self.client.get("/api/v1/spaces")).json()
+        policy = next(s for s in spaces if s["id"] == self.sid)["host"]["injection_policy"]
+        payload["filter_by_focus"] = policy["filter_by_focus"]
+        response = await self.client.post(self.base+"/context", json=payload)
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertIn(event["id"], response.json()["context"])
+        self.assertEqual(core.store.get("event", event["id"], self.sid), event)
+        self.runtime.config["recall_filter_by_focus"] = True
+        payload["filter_by_focus"] = self.runtime.scope_info(self.sid)["injection_policy"]["filter_by_focus"]
+        restricted = await self.client.post(self.base+"/context", json=payload)
+        self.assertNotIn(event["id"], restricted.json()["context"])
+
     async def test_recovery_records_are_authenticated_readonly_and_portable(self):
         core=self.runtime.core
         message=core.store.list('message',self.sid)[0]

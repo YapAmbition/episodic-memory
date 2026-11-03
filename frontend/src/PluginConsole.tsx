@@ -35,6 +35,8 @@ export function PluginConsole({space, stats, onMaintain, onJobs, busy}: {
   const [result,setResult]=useState<Recall|null>(null);
   const [searching,setSearching]=useState(false);
   const base=`/spaces/${space.id}`;
+  const filterByFocus=space.host?.injection_policy?.filter_by_focus ?? false;
+  useEffect(()=>{setResult(null);setQuery("");},[base]);
   useEffect(()=>{
     let alive=true, running=false;
     const load=async()=>{
@@ -54,7 +56,7 @@ export function PluginConsole({space, stats, onMaintain, onJobs, busy}: {
   async function search(){
     if(!query.trim() || searching)return;
     setSearching(true);setError("");setResult(null);
-    try{setResult(await post<Recall>(`${base}/context`,{query, retrieval_mode:"local", trace:true}));}
+    try{setResult(await post<Recall>(`${base}/context`,{query, retrieval_mode:"local", filter_by_focus:filterByFocus, trace:true}));}
     catch(e){setError(e instanceof Error?e.message:"检索失败");}
     finally{setSearching(false);}
   }
@@ -69,7 +71,7 @@ export function PluginConsole({space, stats, onMaintain, onJobs, busy}: {
         <div className="plugin-messages">{messages.length ? messages.map(m=><div key={m.id} className={`plugin-message ${m.role}`}><div className="plugin-message-meta"><strong>{m.role === "assistant" ? "AstrBot" : people.find(p=>p.id===m.person_id)?.name || "未知发送者"}</strong><time>{new Date(m.at).toLocaleString()}</time></div><p>{m.content}</p>{m.retention === "buffer" && <small>临时上下文 · 相关性待整理判断</small>}</div>) : <p className="subtle-note">还没有记录到消息。在 AstrBot 中聊天后，这里会自动更新。</p>}</div>
         <footer>只展示原始会话；请在聊天平台继续对话。</footer>
       </article>
-      <article className="plugin-card"><header><div><Search size={18}/><h2>找一件记得的事</h2></div></header><form className="plugin-search" onSubmit={e=>{e.preventDefault();void search();}}><textarea aria-label="检索记忆" value={query} onChange={e=>setQuery(e.target.value)} placeholder="输入一句话或一个细节…" maxLength={20000}/><button className="button secondary" disabled={searching || !query.trim()}>{searching?"正在检索…":"程序检索"}</button></form><p className="subtle-note">检索不调用模型，不会写入聊天消息或强化记忆。</p>{result && <div className="plugin-result"><small>{result.selected.length} 件相关事件</small><pre>{result.context || "这次没有找到超过唤起门槛的记忆。"}</pre></div>}</article>
+      <article className="plugin-card"><header><div><Search size={18}/><h2>找一件记得的事</h2></div></header><form className="plugin-search" onSubmit={e=>{e.preventDefault();void search();}}><textarea aria-label="检索记忆" value={query} onChange={e=>setQuery(e.target.value)} placeholder="输入一句话或一个细节…" maxLength={20000}/><button className="button secondary" disabled={searching || !query.trim()}>{searching?"正在检索…":"程序检索"}</button></form><p className="subtle-note">检索范围：{filterByFocus ? "仅当前关注人物" : "当前空间全部事件"}。仅使用程序检索，不调用 embedding，不会写入聊天消息或强化记忆。</p>{result && <div className="plugin-result"><small>{result.selected.length} 件相关事件</small><pre>{result.context || "这次没有找到超过唤起门槛的记忆。"}</pre></div>}</article>
     </div>
   </section>;
 }

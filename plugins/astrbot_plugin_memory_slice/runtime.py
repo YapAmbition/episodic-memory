@@ -159,7 +159,7 @@ class Runtime:
         if not binding:
             return {"active": False, "label": "历史空间"}
         return {
-            "injection_policy": {"recall_limit": self.recall_limit, "context_char_budget": self.context_char_budget},
+            "injection_policy": {"recall_limit": self.recall_limit, "context_char_budget": self.context_char_budget, "filter_by_focus": bool(self.config.get("recall_filter_by_focus", False))},
             "active": binding["signature"] == self.signature and self.allowed(binding),
             "kind": "group" if binding["group"] else "private",
             "platform": binding["platform"],
