@@ -31,6 +31,7 @@ export type Anchors = {
   triggers: string[];
 };
 export type MemoryEvent = {
+  frozen?: boolean;
   id: string;
   title: string;
   body: string;

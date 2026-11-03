@@ -1,8 +1,9 @@
+import { GraphPage } from "./GraphPage";
 import { maintenanceStatusLabel } from "./maintenanceUi";
 import { CodexSyncPanel } from "./CodexSyncPanel";
 import { RecallBenchmark } from "./RecallBenchmark";
 import { EmbeddingSettings } from "./EmbeddingSettings";
-import { PluginConsole, PluginConfiguration } from "./PluginConsole";
+import { PluginConsole, PluginConfiguration, PinnedMemorySettings } from "./PluginConsole";
 import { MaintenanceDetails } from "./MaintenanceDetails";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
@@ -32,14 +33,13 @@ import {
   Plus,
   RefreshCw,
   Search,
+  Snowflake,
   Settings2,
   Sparkles,
   Timer,
   Trash2,
   UserRound,
   X,
-  ZoomIn,
-  ZoomOut,
 } from "lucide-react";
 import {
   api,
@@ -158,6 +158,9 @@ export default function App() {
   const [eventModal, setEventModal] = useState<string | null>(null),
     [filter, setFilter] = useState("all"),
     [eventQuery, setEventQuery] = useState("");
+  const [freezeFilter, setFreezeFilter] = useState("all");
+  const [freezingIds, setFreezingIds] = useState<string[]>([]);
+  const freezePending = useRef(new Set<string>());
   const [jobs, setJobs] = useState<Job[]>([]),
     [showJobs, setShowJobs] = useState(false);
   const [auth, setAuth] = useState(false),
@@ -562,9 +565,29 @@ export default function App() {
       fail(e);
     }
   }
+  async function toggleFrozen(event: MemoryEvent) {
+    if (freezePending.current.has(event.id)) return;
+    freezePending.current.add(event.id);
+    setFreezingIds(ids => [...ids, event.id]);
+    const scope = sid;
+    try {
+      const updated = await put<MemoryEvent>(`${base}/events/${event.id}/freeze`, {
+        frozen: !event.frozen, expected_version: event.version,
+      });
+      if (currentScope.current !== scope) return;
+      setEvents(rows => rows.map(row => row.id === event.id ? {...row, ...updated} : row));
+      notify(updated.frozen ? "事件已冻结" : "事件已解冻");
+    } catch (e) {
+      if (currentScope.current === scope) { fail(e); void refresh().catch(fail); }
+    } finally {
+      freezePending.current.delete(event.id);
+      setFreezingIds(ids => ids.filter(id => id !== event.id));
+    }
+  }
   const filtered = events.filter(
     (e) =>
       (filter === "all" || e.memory_status === filter) &&
+      (freezeFilter === "all" || (freezeFilter === "frozen" ? !!e.frozen : !e.frozen)) &&
       (!eventQuery ||
         `${e.title}${e.body}${JSON.stringify(e.anchors)}`.includes(eventQuery)),
   );
@@ -888,13 +911,19 @@ export default function App() {
                       : "历史会话只读取已有结果；点击重新唤起才会检索"}
                   </span>
                 </div>
-                <div className="experiment-toolbar">
-                  <label>聊天会话 <select aria-label="选择聊天会话" value={cid} disabled={busy} onChange={e=>{const c=conversations.find(x=>x.id===e.target.value);setCid(e.target.value);if(c?.person_id)setPid(c.person_id);setTrace(null);setQuery("");}}>
-                    <option value="">选择会话</option>
-                    {conversations.map(c=><option key={c.id} value={c.id}>{c.display_title || c.title} · {new Date(c.created_at).toLocaleString()}</option>)}
-                  </select></label>
-                  <span>显示当前会话的 {messages.length} 条消息 · 每 5 秒刷新</span>
-                  {stats?.message_cleanup?.last_run_at && <span>原文清理：累计 {stats.message_cleanup.total_cleaned ?? 0} 条 · 最近 {new Date(stats.message_cleanup.last_run_at).toLocaleString()} 清理 {stats.message_cleanup.last_cleaned ?? 0} 条</span>}
+                <div className="lab-session-bar">
+                  <label className="lab-session-picker">
+                    <span className="lab-session-label"><MessageCircle size={14}/>聊天会话</span>
+                    <span className="lab-session-select">
+                      <select aria-label="选择聊天会话" value={cid} disabled={busy} onChange={e=>{const c=conversations.find(x=>x.id===e.target.value);setCid(e.target.value);if(c?.person_id)setPid(c.person_id);setTrace(null);setQuery("");}}>
+                        <option value="">选择会话</option>
+                        {conversations.map(c=><option key={c.id} value={c.id}>{c.display_title || c.title} · {new Date(c.created_at).toLocaleString(undefined,{year:"numeric",month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit"})}</option>)}
+                      </select>
+                      <ChevronDown size={14} aria-hidden="true"/>
+                    </span>
+                  </label>
+                  <span className="lab-session-count"><b>{messages.length}</b> 条消息<span>· 每 5 秒刷新</span></span>
+                  {stats?.message_cleanup?.last_run_at && <details className="lab-cleanup-info"><summary>原文清理 · 累计 {stats.message_cleanup.total_cleaned ?? 0} 条</summary><p>最近执行于 {new Date(stats.message_cleanup.last_run_at).toLocaleString()}，清理 {stats.message_cleanup.last_cleaned ?? 0} 条。</p></details>}
                 </div>
                 <div className="lab-grid">
                   <section className="panel chat-panel">
@@ -1391,6 +1420,13 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                  <div className="filter-tabs freeze-filter" role="group" aria-label="冻结状态筛选">
+                    {[["all", "全部状态"], ["unfrozen", "未冻结"], ["frozen", "已冻结"]].map(([value, label]) =>
+                      <button key={value} className={freezeFilter === value ? "active" : ""} aria-pressed={freezeFilter === value} onClick={() => setFreezeFilter(value)}>
+                        {value === "frozen" && <Snowflake size={13}/>} {label}
+                      </button>
+                    )}
+                  </div>
                   <label className="search-box">
                     <Search size={16} />
                     <input
@@ -1402,8 +1438,8 @@ export default function App() {
                 </div>
                 <div className="event-grid">
                   {filtered.map((e, i) => (
-                    <button
-                      className="event-card"
+                    <article
+                      className={`event-card${e.frozen ? " is-frozen" : ""}`}
                       key={e.id}
                       onClick={() => setEventModal(e.id)}
                     >
@@ -1419,7 +1455,7 @@ export default function App() {
                         {day(e.occurred_at)} ·{" "}
                         {e.origin === "demo" ? "示例事件" : "事件记录"}
                       </span>
-                      <h3>{e.title}</h3>
+                      <h3><button className="event-open" onClick={(click) => {click.stopPropagation();setEventModal(e.id);}}>{e.title}</button></h3>
                       <p>
                         {e.body.slice(0, 115)}
                         {e.body.length > 115 ? "…" : ""}
@@ -1440,14 +1476,21 @@ export default function App() {
                           当前鲜明度 <b>{percent(e.memory.strength)}</b>
                         </span>
                       </div>
-                    </button>
+                      <div className="event-freeze-row">
+                        <span>{e.frozen ? "内容已锁定" : "可继续追加"}</span>
+                        <button type="button" role="switch" aria-checked={!!e.frozen} aria-label={`冻结事件：${e.title}`} disabled={freezingIds.includes(e.id)} className="event-freeze-switch" onClick={(click) => {click.stopPropagation();void toggleFrozen(e);}}>
+                          {freezingIds.includes(e.id) ? <Loader2 size={14} className="spin"/> : <Snowflake size={14}/>}
+                          <span>{e.frozen ? "已冻结" : "冻结"}</span><i aria-hidden="true"/>
+                        </button>
+                      </div>
+                    </article>
                   ))}
                 </div>
                 {filtered.length === 0 && (
                   <div className="empty-state">
                     <BookOpen size={32} />
-                    <h3>这里还没有事情</h3>
-                    <p>可以新建事件，或从一段对话开始整理。</p>
+                    <h3>{events.length ? "没有符合筛选条件的事件" : "这里还没有事情"}</h3>
+                    <p>{events.length ? "试试切换冻结状态、鲜明度筛选或搜索词。" : "可以新建事件，或从一段对话开始整理。"}</p>
                   </div>
                 )}
               </>
@@ -1455,7 +1498,7 @@ export default function App() {
             {page === "graph" && (
               <GraphPage events={events} onOpen={setEventModal} />
             )}
-            {page === "settings" && managed && config && <><PluginConfiguration config={config} space={spaces.find(s => s.id === sid)} /><EmbeddingSettings key={sid} sid={sid} readOnly onError={(e) => setError(String(e))} /></>}
+            {page === "settings" && managed && config && <><PluginConfiguration config={config} space={spaces.find(s => s.id === sid)} /><PinnedMemorySettings key={`pins-${sid}`} sid={sid} active={!!spaces.find(s => s.id === sid)?.host?.active} /><EmbeddingSettings key={sid} sid={sid} readOnly onError={(e) => setError(String(e))} /></>}
             {page === "settings" && !managed && config && model && (
               <SettingsPage
                 sid={sid}
@@ -1640,218 +1683,6 @@ export default function App() {
         </div>
       )}
     </div>
-  );
-}
-
-function GraphPage({
-  events,
-  onOpen,
-}: {
-  events: MemoryEvent[];
-  onOpen: (id: string) => void;
-}) {
-  const [zoom, setZoom] = useState(1),
-    [selected, setSelected] = useState("");
-  const width = 900,
-    height = 540,
-    cx = 450,
-    cy = 270;
-  const points = events.map((e, i) => {
-    const angle = (i / Math.max(events.length, 1)) * Math.PI * 2 - Math.PI / 2;
-    return {
-      ...e,
-      x: cx + Math.cos(angle) * 235,
-      y: cy + Math.sin(angle) * 190,
-    };
-  });
-  const lookup = Object.fromEntries(points.map((p) => [p.id, p]));
-  const current = events.find((e) => e.id === selected);
-  return (
-    <>
-      <section className="page-heading">
-        <div>
-          <div className="eyebrow">
-            <span />A NETWORK OF EXPERIENCES
-          </div>
-          <h1>
-            一件事，想起另一件事<span>。</span>
-          </h1>
-          <p>每条连接都有来由。点击节点，展开一段完整经历。</p>
-        </div>
-        <div className="graph-legend">
-          <i className="active" />
-          鲜明
-          <i className="quiet" />
-          渐淡
-          <i className="dormant" />
-          沉睡
-        </div>
-      </section>
-      <div className="graph-layout">
-        <section className="panel graph-panel">
-          <div className="panel-header">
-            <h3>
-              <Network size={16} />
-              事件关联网络
-            </h3>
-            <span className="muted">
-              {events.length} 个事件 ·{" "}
-              {events.reduce((n, e) => n + e.links.length, 0)} 条连接
-            </span>
-          </div>
-          <svg
-            className="memory-graph"
-            viewBox={`0 0 ${width} ${height}`}
-            role="group"
-            aria-label="可交互的事件关联网络"
-          >
-            <defs>
-              <pattern
-                id="grid"
-                width="22"
-                height="22"
-                patternUnits="userSpaceOnUse"
-              >
-                <circle cx="1" cy="1" r=".8" fill="#e3e1da" />
-              </pattern>
-            </defs>
-            <rect width={width} height={height} fill="url(#grid)" />
-            <g
-              transform={`translate(${cx * (1 - zoom)},${cy * (1 - zoom)}) scale(${zoom})`}
-            >
-              {points.flatMap((p) =>
-                p.links.map((link, i) => {
-                  const t = lookup[link.target_id];
-                  return t ? (
-                    <g key={p.id + i}>
-                      <path
-                        d={`M${p.x},${p.y} Q${cx},${cy} ${t.x},${t.y}`}
-                        fill="none"
-                        stroke={
-                          selected === p.id || selected === t.id
-                            ? "#c77b56"
-                            : "#b7b9ae"
-                        }
-                        strokeWidth="1.6"
-                        strokeDasharray="4 5"
-                      />
-                      <text
-                        x={(p.x + t.x + cx) / 3}
-                        y={(p.y + t.y + cy) / 3 - 5}
-                        textAnchor="middle"
-                        className="edge-label"
-                      >
-                        {link.relation}
-                      </text>
-                    </g>
-                  ) : null;
-                }),
-              )}
-              {points.map((p, i) => (
-                <g
-                  key={p.id}
-                  className={`graph-node ${p.memory_status}`}
-                  role="button"
-                  tabIndex={0}
-                  aria-label={p.title}
-                  onClick={() => setSelected(p.id)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") setSelected(p.id);
-                  }}
-                >
-                  <circle
-                    cx={p.x}
-                    cy={p.y}
-                    r={selected === p.id ? 38 : 34}
-                    fill="white"
-                    stroke={selected === p.id ? "#b85e38" : "#e5e3dc"}
-                    strokeWidth={selected === p.id ? 2 : 1}
-                  />
-                  <circle cx={p.x} cy={p.y} r="26" className="node-fill" />
-                  <text
-                    x={p.x}
-                    y={p.y + 5}
-                    textAnchor="middle"
-                    className="node-number"
-                  >
-                    {String(i + 1).padStart(2, "0")}
-                  </text>
-                  <text
-                    x={p.x}
-                    y={p.y + 57}
-                    textAnchor="middle"
-                    className="node-title"
-                  >
-                    {p.title.length > 15 ? p.title.slice(0, 15) + "…" : p.title}
-                  </text>
-                  <text
-                    x={p.x}
-                    y={p.y + 75}
-                    textAnchor="middle"
-                    className="node-detail"
-                  >
-                    {statusLabel[p.memory_status]} ·{" "}
-                    {percent(p.memory.strength)}
-                  </text>
-                </g>
-              ))}
-            </g>
-          </svg>
-          <div className="graph-controls">
-            <button
-              className="icon-button"
-              aria-label="缩小"
-              onClick={() => setZoom((z) => Math.max(0.5, z - 0.1))}
-            >
-              <ZoomOut size={17} />
-            </button>
-            <button onClick={() => setZoom(1)}>
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              className="icon-button"
-              aria-label="放大"
-              onClick={() => setZoom((z) => Math.min(1.8, z + 0.1))}
-            >
-              <ZoomIn size={17} />
-            </button>
-          </div>
-        </section>
-        <aside className="panel graph-detail">
-          <span className="eyebrow">EVENT DETAILS</span>
-          {current ? (
-            <>
-              <span className={`state ${current.memory_status}`}>
-                {statusLabel[current.memory_status]}
-              </span>
-              <h2>{current.title}</h2>
-              <p>{current.body.slice(0, 400)}</p>
-              <div className="simple-chips">
-                {current.anchors.details.map((d) => (
-                  <span key={d}>{d}</span>
-                ))}
-              </div>
-              <button
-                className="button secondary"
-                onClick={() => onOpen(current.id)}
-              >
-                查看完整事件
-                <ArrowRight size={15} />
-              </button>
-            </>
-          ) : (
-            <>
-              <Network size={38} className="muted" />
-              <h3>沿着一条线索</h3>
-              <p>选择一个节点，查看事情的经过、当时留下的印象和关联。</p>
-              <div className="graph-note">
-                没有连线的事情仍然保留。只有有依据的联系，才会出现在这里。
-              </div>
-            </>
-          )}
-        </aside>
-      </div>
-    </>
   );
 }
 

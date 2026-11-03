@@ -19,7 +19,7 @@ from .web_server import WebServer
     "astrbot_plugin_memory_slice",
     "Memory Slice",
     "以事件为单位的记忆、联想与淡忘",
-    "0.3.3",
+    "0.3.4",
 )
 class MemorySlicePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):

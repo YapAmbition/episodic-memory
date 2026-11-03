@@ -45,6 +45,7 @@ class WebServer:
             frontend_dir=self.frontend_dir,
             access_token=token,
             scope_info=self.runtime.scope_info,
+            pinned_memories=self.runtime.pins,
         )
         # Bind ourselves so port conflicts raise OSError instead of Uvicorn's SystemExit.
         self.socket = socket.socket(

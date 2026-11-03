@@ -378,3 +378,8 @@ class EmbeddingInput(StrictModel):
         if self.enabled and (not self.base_url or not self.model):
             raise ValueError("Embedding requires a base URL and model")
         return self
+
+
+class FreezeInput(StrictModel):
+    frozen: bool
+    expected_version: Optional[int] = Field(default=None, ge=1)

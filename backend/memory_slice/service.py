@@ -124,6 +124,8 @@ class MemoryService:
             if exc.status_code != 404:
                 raise
             old = None
+        if old and old.get("frozen"):
+            raise HTTPException(409, "事件已冻结，请先解冻再修改")
         raw = body.model_dump(mode="json")
         expected = raw.pop("expected_version", None)
         for person_id in raw["person_ids"]:
@@ -512,7 +514,8 @@ class MemoryService:
                         grouped.setdefault(message["conversation_id"], []).append(message)
                     for cid, group in grouped.items():
                         users = [m for m in group if m["role"] == "user"]
-                        prior = next((e for e in existing if e.get("archive_conversation_id") == cid and e["status"] != "archived"), None)
+                        prior = next((e for e in existing if e.get("archive_conversation_id") == cid and e["status"] != "archived" and not e.get("frozen")), None)
+                        frozen_prior = next((e for e in reversed(existing) if e.get("archive_conversation_id") == cid and e["status"] != "archived" and e.get("frozen")), None)
                         if not users and not prior:
                             ignored += [{"message_id": m["id"], "reason": "孤立的助手消息无用户事件依据，原始消息保留"} for m in group]
                             continue
@@ -524,6 +527,7 @@ class MemoryService:
                             "anchors": {"details": [m["content"][:100] for m in users[:8]]},
                             "salience": prior["salience"] if prior else .35,
                             "salience_reason": "本地归档未推断关注强度，使用可编辑的初始值。",
+                            "links": [{"target_id": frozen_prior["id"], "relation": "冻结归档的后续"}] if frozen_prior and not prior else [],
                             "source_ids": [m["id"] for m in group], "status": "open"})
                     plan = MaintenancePlan.model_validate({"events": raw_events, "ignored_messages": ignored})
                     method = "local_archive"
@@ -967,6 +971,20 @@ class MemoryService:
         return result
 
 
+    def freeze_event(self, sid, eid, frozen, expected_version=None):
+        with self.store.connect() as con:
+            con.execute("BEGIN IMMEDIATE")
+            event = self.store.get("event", eid, sid, con)
+            if expected_version is not None and event['version'] != expected_version:
+                raise HTTPException(409, "事件已更新，请刷新后重试")
+            if bool(event.get('frozen')) == frozen:
+                return event
+            event.update(frozen=frozen, updated_at=iso())
+            event = self.store.put('event', event, sid, con=con, allow_freeze_change=True)
+            audit(self.store, sid, 'freeze' if frozen else 'unfreeze', [eid], '用户手动设置', con)
+            return event
+
+
     def update_event(self, sid: str, eid: str, body: EventInput):
         self.store.get("event", eid, sid)
         with self.store.connect() as con:
@@ -986,7 +1004,7 @@ class MemoryService:
                 self.store.put("event", event, sid, con=con)
             # Stored recall traces contain event bodies; remove those too.
             for trace in self.store.list("recall", sid, con):
-                if any(item["event_id"] == eid for item in trace["selected"] + trace["candidates"]):
+                if any(item["event_id"] == eid for item in trace.get("items", []) + trace.get("selected", []) + trace.get("candidates", [])):
                     self.store.delete("recall", trace["id"], sid, con)
         return {"deleted": eid, "source_messages_retained": True}
 

@@ -56,6 +56,8 @@ def merge_events(store, sid, body, con):
     events = [store.get("event", eid, sid, con) for eid in ids]
     if any(event["status"] == "archived" for event in events):
         raise HTTPException(409, "已归档事件不能再次合并")
+    if any(event.get("frozen") for event in events):
+        raise HTTPException(409, "冻结事件不能合并，请先解冻")
     target = next(e for e in events if e["id"] == body.target_id)
     ensure_baseline(store, sid, target, con)
     for source in events:
@@ -105,6 +107,8 @@ def merge_events(store, sid, body, con):
 
 def split_event(store, sid, eid, body, con):
     original = store.get("event", eid, sid, con)
+    if original.get("frozen"):
+        raise HTTPException(409, "冻结事件不能拆分，请先解冻")
     if original["status"] == "archived":
         raise HTTPException(409, "已归档事件不能再次拆分")
     normalize = lambda text: re.sub(r"\s+", "", text)

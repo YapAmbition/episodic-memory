@@ -24,6 +24,7 @@ from .schemas import (
     RecallInput,
     ConversationInput,
     EventInput,
+    FreezeInput,
     MaintenanceInput,
     MemoryConfig,
     MessageInput,
@@ -70,6 +71,7 @@ def create_app(
     host_mode="standalone",
     access_token=None,
     scope_info=None,
+    pinned_memories=None,
 ):
     benchmark_tasks = set()
     benchmark_jobs = {}
@@ -166,7 +168,7 @@ def create_app(
             path = request.url.path.removeprefix("/api/v1")
             allowed = bool(
                 re.fullmatch(
-                    r"/spaces/[^/]+/(?:events(?:/[^/]+(?:/(?:split|reinforce))?)?|context|recall|search|benchmarks|maintenance|jobs/[^/]+/retry|recalls/[^/]+/feedback)",
+                    r"/spaces/[^/]+/(?:events(?:/[^/]+(?:/(?:split|reinforce|freeze))?)?|pinned-memories|context|recall|search|benchmarks|maintenance|jobs/[^/]+/retry|recalls/[^/]+/feedback)",
                     path,
                 )
             )
@@ -312,6 +314,20 @@ def create_app(
     def update_person(sid: str, pid: str, body: PersonInput):
         return service.update_person(sid, pid, body)
 
+    @api.get("/spaces/{sid}/pinned-memories", tags=["Memory"])
+    def get_pinned_memories(sid: str):
+        if pinned_memories is None:
+            raise HTTPException(404, "仅 AstrBot 插件支持常驻记忆")
+        return pinned_memories.inspect(sid)
+
+    @api.put("/spaces/{sid}/pinned-memories", tags=["Memory"])
+    def put_pinned_memories(sid: str, body: list[str]):
+        if pinned_memories is None:
+            raise HTTPException(404, "仅 AstrBot 插件支持常驻记忆")
+        if scope_info and not scope_info(sid).get('active'):
+            raise HTTPException(403, "此空间未启用")
+        return pinned_memories.save(sid, body)
+
     @api.get("/spaces/{sid}/config", tags=["Configuration"])
     def get_config(sid: str):
         return service.get_config(sid)
@@ -411,6 +427,10 @@ def create_app(
     @api.get("/spaces/{sid}/events/{eid}", tags=["Events"])
     def get_event(sid: str, eid: str, at: Optional[datetime] = None):
         return service.get_event(sid, eid, at)
+
+    @api.put("/spaces/{sid}/events/{eid}/freeze", tags=["Events"])
+    def freeze_event(sid: str, eid: str, body: FreezeInput):
+        return service.freeze_event(sid, eid, body.frozen, body.expected_version)
 
     @api.put("/spaces/{sid}/events/{eid}", tags=["Events"])
     def update_event(sid: str, eid: str, body: EventInput):

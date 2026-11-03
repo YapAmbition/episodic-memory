@@ -320,3 +320,12 @@ Codex 同步从首次启用时刻开始，不自动导入此前历史；页面�
 Python 接入调用 `await service.retrieve(space_id, RecallInput(...))`，然后在接入侧调用共用函数 `memory_slice.context_assembly.assemble_context(result, config, current_context)`。组装函数根据完整当前上下文去重、处理版本/片段依赖，并应用 `max_events` 和 `context_char_budget`（默认 8 件、18,000 字符）；不发起新检索或模型请求，也不修改原结果。AstrBot 已采用此流程。若希望去重后仍有更多候选，接入方可显式提高检索 limit。
 
 旧 `/context` 和 `service.recall` 作为兼容的一站式上下文接口保留；前端对话实验室及旧调用方仍可继续使用。`/search` 保留原候选查询语义。
+
+
+### 冻结事件
+
+事件详情提供「冻结事件 / 解冻事件」。冻结独立于 AstrBot 的常驻选择，不占常驻名额；被冻结的事件仍能正常召回，遗忘权重与重提强化仍按原规则运行。
+
+冻结保护已保存的事件内容：自动整理和手工编辑不能追加或改写，合并与拆分需先解冻。整理模型会收到只读标记，后续进展或更正应另建事件并关联原事件；核心写入校验防止模型绕过限制。若模型仍尝试修改冻结事件，该批事务回滚，原始消息保留且不标为已处理。直接删除仍需走原有删除确认；删除或合并其他事件若会改写冻结事件中的引用，则拒绝操作并提示先解冻。
+
+接口：`PUT /api/v1/spaces/{sid}/events/{eid}/freeze`，请求体 `{"frozen": true, "expected_version": 3}`。传 `false` 解冻；版本号可选，提供时用于并发校验，过期返回 409。旧事件默认为未冻结，无需迁移数据库。AstrBot 自带控制台也支持此接口。

@@ -67,3 +67,14 @@ class StructuredRecallTests(unittest.TestCase):
                 self.assertEqual(len(result['items']), 1)
                 response = client.put(base + '/recalls/' + result['id'] + '/feedback', json={'useful_ids': [created.json()['id']]})
                 self.assertEqual(response.status_code, 200, response.text)
+
+    def test_delete_event_after_structured_recall_removes_trace(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with TestClient(create_app(directory, seed=False)) as client:
+                sid = client.post('/api/v1/spaces', json={'name': 'delete recall'}).json()['id']
+                base = f'/api/v1/spaces/{sid}'
+                eid = client.post(base + '/events', json={'title': '陨石一号', 'body': '陨石一号烤面包', 'salience': 1}).json()['id']
+                result = client.post(base + '/recall', json={'query': '陨石一号'}).json()
+                self.assertTrue(result['items'])
+                self.assertEqual(client.delete(base + '/events/' + eid).status_code, 200)
+                self.assertEqual(client.get(base + '/recalls/' + result['id']).status_code, 404)

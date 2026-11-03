@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { BookOpen, History, RefreshCw, Search, ShieldCheck } from "lucide-react";
-import { api, post } from "./api";
-import type { Config, Conversation, Message, Person, Recall, Space, Stats } from "./types";
+import { api, post, put } from "./api";
+import type { Config, Conversation, Message, MemoryEvent, Person, Recall, Space, Stats } from "./types";
 import "./plugin.css";
 
 export function PluginConfiguration({config, space}: {config: Config; space?: Space}) {
@@ -14,7 +14,7 @@ export function PluginConfiguration({config, space}: {config: Config; space?: Sp
       <article><small>自动整理</small><strong>{config.schedule_enabled ? `每 ${config.schedule_interval_minutes} 分钟` : "已暂停"}</strong></article>
       <article><small>基础半衰期</small><strong>{config.half_life_days} 天</strong></article>
       <article><small>每轮新增注入字符上限</small><strong>{(space?.host?.injection_policy?.context_char_budget ?? config.context_char_budget).toLocaleString()}</strong></article>
-      <article><small>每轮召回 / 新增事件上限</small><strong>{space?.host?.injection_policy?.recall_limit ?? config.max_events} 件</strong></article>
+      <article><small>每轮普通召回事件上限</small><strong>{space?.host?.injection_policy?.recall_limit ?? config.max_events} 件</strong></article>
       <article><small>片段目标 / 硬上限</small><strong>{config.fragment_target_chars} / {config.fragment_max_chars} 字符</strong></article>
       <article><small>关联展开深度</small><strong>{config.max_depth} 层</strong></article>
     </div>
@@ -32,6 +32,7 @@ export function PluginConsole({space, stats, onMaintain, onJobs, busy}: {
   const [error,setError]=useState("");
   const [updated,setUpdated]=useState("");
   const [query,setQuery]=useState("");
+  const [saveFailed,setSaveFailed]=useState(false);
   const [result,setResult]=useState<Recall|null>(null);
   const [searching,setSearching]=useState(false);
   const base=`/spaces/${space.id}`;
@@ -70,6 +71,53 @@ export function PluginConsole({space, stats, onMaintain, onJobs, busy}: {
         <footer>只展示原始会话；请在聊天平台继续对话。</footer>
       </article>
       <article className="plugin-card"><header><div><Search size={18}/><h2>找一件记得的事</h2></div></header><form className="plugin-search" onSubmit={e=>{e.preventDefault();void search();}}><textarea aria-label="检索记忆" value={query} onChange={e=>setQuery(e.target.value)} placeholder="输入一句话或一个细节…" maxLength={20000}/><button className="button secondary" disabled={searching || !query.trim()}>{searching?"正在检索…":"程序检索"}</button></form><p className="subtle-note">检索不调用模型，不会写入聊天消息或强化记忆。</p>{result && <div className="plugin-result"><small>{result.selected.length} 件相关事件</small><pre>{result.context || "这次没有找到超过唤起门槛的记忆。"}</pre></div>}</article>
+    </div>
+  </section>;
+}
+
+
+type PinState = {event_ids: string[]; characters: number; limit: number; errors: string[]};
+export function PinnedMemorySettings({sid, active}: {sid: string; active: boolean}) {
+  const [events,setEvents]=useState<MemoryEvent[]>([]);
+  const [selected,setSelected]=useState<string[]>([]);
+  const [saved,setSaved]=useState<PinState|null>(null);
+  const [error,setError]=useState("");
+  const [notice,setNotice]=useState("");
+  const [busy,setBusy]=useState(true);
+  const [query,setQuery]=useState("");
+  const [saveFailed,setSaveFailed]=useState(false);
+  useEffect(()=>{
+    let alive=true;
+    Promise.all([api<MemoryEvent[]>(`/spaces/${sid}/events`),api<PinState>(`/spaces/${sid}/pinned-memories`)])
+      .then(([rows,pins])=>{if(alive){setEvents(rows);setSaved(pins);setSelected(pins.event_ids);}})
+      .catch(e=>{if(alive)setError(String(e));})
+      .finally(()=>{if(alive)setBusy(false);});
+    return ()=>{alive=false;};
+  },[sid]);
+  async function save(){
+    setBusy(true);setError("");setNotice("");
+    try{const pins=await put<PinState>(`/spaces/${sid}/pinned-memories`,selected);setSaved(pins);setSaveFailed(false);setNotice("常驻选择已保存，下次模型请求生效。");}
+    catch(e){setSaveFailed(true);setError(e instanceof Error && e.message.startsWith("暂时没保存成功") ? e.message : `未能确认保存成功，你的选择已保留，可稍后重试。${e instanceof Error ? e.message : "请检查服务连接。"}`);}finally{setBusy(false);}
+  }
+  const missing=selected.filter(id=>!events.some(e=>e.id===id));
+  return <section className="plugin-card">
+    <header><h2>常驻记忆</h2><span>{selected.length} / 3 件</span></header>
+    <div className="plugin-search">
+      <p>当前群聊或私聊空间独立保存。每轮完整注入最新正文，即使历史上下文中已有这件事。普通召回使用剩余字符预算。</p>
+      {saved && <p>已保存选择占用 {saved.characters.toLocaleString()} / {saved.limit.toLocaleString()} 字符（含说明和标签）。保存时严格校验，超限请减少选择、缩短事件或提高插件上限。</p>}
+      {!!saved?.errors.length && <div role="alert" className="plugin-notice">{saved.errors.join("；")}</div>}
+      <input aria-label="搜索可常驻事件" placeholder="按标题或事件 ID 查找" value={query} onChange={e=>setQuery(e.target.value)}/>
+      <div className="plugin-pin-list">
+        {missing.map(id=><label key={id}><input type="checkbox" checked onChange={()=>setSelected(selected.filter(x=>x!==id))} disabled={busy || !active}/>已删除：{id}（取消选择后保存）</label>)}
+        {events.filter(e=>selected.includes(e.id) || (e.status!=="archived" && (e.title.includes(query) || e.id.includes(query)))).map(e=><label key={e.id}>
+          <input type="checkbox" checked={selected.includes(e.id)} disabled={busy || !active || (!selected.includes(e.id) && selected.length>=3)} onChange={()=>{setNotice("");setSelected(selected.includes(e.id)?selected.filter(id=>id!==e.id):[...selected,e.id]);}}/>
+          <span><strong>{e.title}</strong><small>{e.id}{e.frozen ? " · 已冻结" : ""} · 正文 {e.body.length.toLocaleString()} 字符{e.status==="archived" ? " · 已归档，请取消选择" : ""}</small></span>
+        </label>)}
+        {!busy && !events.length && <p>还没有事件，先整理聊天记录再选择。</p>}
+      </div>
+      {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
+      <button className="button primary" disabled={busy || !active || !saved} onClick={()=>void save()}>{busy ? "处理中…" : saveFailed ? "重试保存" : "保存常驻选择"}</button>
+      <small>若事件后续增长、删除或归档导致选择失效，将暂停本轮记忆注入；通过 /记忆切片 查看原因并在这里调整。总长度不会突破上限。</small>
     </div>
   </section>;
 }

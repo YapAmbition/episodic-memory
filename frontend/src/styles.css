@@ -3354,3 +3354,51 @@ input[type="radio"] {
   background: #a6a99f;
   box-shadow: none;
 }
+
+/* Frozen memories remain readable and distinct from fading strength states. */
+.archive-toolbar{flex-wrap:wrap;gap:12px}
+.event-card{cursor:pointer;padding:16px;min-height:260px}
+.event-card h3{font-size:14px;line-height:1.55;margin-top:8px}
+.event-card > p{font-size:10px;line-height:1.75;margin-top:8px}
+.event-card .event-card-top{margin-bottom:12px}
+.event-card .event-card-icon{width:30px;height:30px}
+.event-card .event-card-icon svg{width:17px;height:17px}
+.event-card .simple-chips{margin:10px 0}
+.event-card .event-card-bottom{padding-top:10px}
+.event-card.is-frozen{background:#f2f6fc;border-color:#b3c9df;box-shadow:none}
+.event-card.is-frozen:hover{border-color:#7c9fbe;box-shadow:0 6px 16px #427bad0c}
+.event-card.is-frozen h3{color:#45627d}
+.event-card.is-frozen .event-card-icon{background:#e3ecf7;color:#557b9c}
+.event-card.is-frozen .simple-chips span{background:#e9f0f8;border-color:#d8e3ef;color:#59758f}
+.event-open{padding:0;text-align:left;font:inherit;color:inherit;line-height:inherit}
+.event-open:focus-visible,.event-freeze-switch:focus-visible{outline:2px solid #427bad;outline-offset:4px;border-radius:5px}
+.event-freeze-row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:9px;padding-top:0;border-top:0;font-size:9px;color:#7c8875}
+.is-frozen .event-freeze-row{border-color:#c1d7ed;color:#426787}
+.event-freeze-switch{display:flex;align-items:center;gap:5px;padding:5px 0 5px 6px;border-radius:5px;color:#7c8875;background:transparent;font-size:9px}
+.event-freeze-switch[aria-checked=true]{background:transparent;color:#557b9c}
+.event-freeze-switch i{display:block;position:relative;width:24px;height:14px;border-radius:20px;background:#bcc5b4}
+.event-freeze-switch i:after{content:"";position:absolute;width:10px;height:10px;left:2px;top:2px;border-radius:50%;background:white;transition:transform .15s}
+.event-freeze-switch[aria-checked=true] i{background:#467eaf}
+.event-freeze-switch[aria-checked=true] i:after{transform:translateX(10px)}
+.event-freeze-switch:disabled{opacity:.6;cursor:wait}
+.freeze-filter button.active{background:#e5effb;color:#285982}
+
+.event-freeze-switch > svg{width:11px;height:11px}
+
+/* Session selection shares the compact lab control styling. */
+.lab-session-bar{display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;margin:0 0 18px;padding:12px 0;border-top:1px solid #e6e8df;border-bottom:1px solid #e6e8df;font-size:11px;color:#8c9682}
+.lab-session-picker{display:flex;align-items:center;gap:12px;min-width:0;max-width:100%}
+.lab-session-label{display:flex;align-items:center;gap:8px;white-space:nowrap;color:#88957c;font-size:11px}
+.lab-session-select{position:relative;display:flex;align-items:center;min-width:0}
+.lab-session-select select{appearance:none;-webkit-appearance:none;width:310px;max-width:100%;border:1px solid #dfe3d6;border-radius:7px;background:#fffef9;padding:9px 32px 9px 12px;font:inherit;font-size:11px;line-height:1.4;color:#65745a;text-overflow:ellipsis;cursor:pointer;transition:border-color .15s,box-shadow .15s}
+.lab-session-select select:hover{border-color:#b6c2a9}
+.lab-session-select select:focus-visible{outline:none;border-color:#92a77d;box-shadow:0 0 0 3px #96ac7f18}
+.lab-session-select select:disabled{opacity:.6;cursor:wait}
+.lab-session-select>svg{position:absolute;right:11px;color:#8e9b81;pointer-events:none}
+.lab-session-count{display:flex;gap:5px;align-items:center;font-size:10px;white-space:nowrap;color:#8d9882}
+.lab-session-count b{font-weight:500;color:#667d54}
+.lab-session-count>span{margin-left:3px;color:#a1a995}
+.lab-cleanup-info{margin-left:auto;position:relative;font-size:9px;color:#a0a88f}
+.lab-cleanup-info summary{cursor:pointer;padding:5px 0}
+.lab-cleanup-info p{position:absolute;right:0;top:100%;width:245px;padding:12px 14px;margin:5px 0 0;border:1px solid #e0e5d7;border-radius:8px;background:#fffef9;box-shadow:0 5px 18px #4e603014;font-size:10px;line-height:1.7;color:#859177;z-index:5}
+@media(max-width:760px){.lab-session-picker{width:100%;gap:10px}.lab-session-select{flex:1}.lab-session-select select{width:100%}.lab-session-bar{gap:9px 12px}.lab-cleanup-info p{width:220px}}

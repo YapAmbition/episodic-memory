@@ -149,6 +149,129 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.runtime = Runtime(self.host, self.config, self.tmp.name)
         await self.runtime.start()
 
+    async def test_pinned_every_round_latest_version_and_scope(self):
+        record = await self.runtime.ingest(Event())
+        sid = record['space_id']
+        e = self.runtime.core.create_event(sid, EventInput(title="常驻约定", body="每周三照顾植物"))
+        self.runtime.pins.save(sid, [e['id']])
+        request = types.SimpleNamespace(system_prompt="", contexts=[], prompt="", extra_user_content_parts=[])
+        first = await self.runtime.recall(Event("今天天气", mid="2"), request)
+        self.assertIn("每周三照顾植物", first)
+        request.contexts = [{'role': 'user', 'content': first}]
+        second = await self.runtime.recall(Event("随便聊聊", mid="3"), request)
+        self.assertIn("每周三照顾植物", second)
+        self.assertEqual(second.count(f'id="{e["id"]}"'), 1)
+        self.runtime.core.update_event(sid, e['id'], EventInput(title="常驻约定", body="改为每周四照顾植物"))
+        third = await self.runtime.recall(Event("随便聊聊", mid="4"), request)
+        self.assertIn("改为每周四", third)
+        self.assertIn('revision="2"', third)
+        other = await self.runtime.ingest(Event(uid="99"))
+        self.assertEqual(self.runtime.pins.ids(other['space_id']), [])
+        with self.assertRaises(MemoryError):
+            self.runtime.pins.save(other['space_id'], [e['id']])
+        await self.reset()
+        self.assertEqual(self.runtime.pins.ids(sid), [e['id']])
+
+    async def test_pins_survive_retrieve_and_assembly_failure(self):
+        sid = (await self.runtime.ingest(Event()))['space_id']
+        e = self.runtime.core.create_event(sid, EventInput(title="常驻", body="始终照顾植物"))
+        self.runtime.pins.save(sid, [e['id']])
+        for target in ('retrieve', 'assemble'):
+            mock = patch.object(self.runtime.core, 'retrieve', AsyncMock(side_effect=RuntimeError('secret'))) if target == 'retrieve' else patch('astrbot_plugin_memory_slice.runtime.assemble_context', side_effect=RuntimeError('secret'))
+            event = Event("随便聊聊", mid=target)
+            with mock:
+                wire = await self.runtime.recall(event)
+            self.assertIn("始终照顾植物", wire)
+            self.assertNotIn("secret", wire)
+            self.assertLessEqual(len(wire), self.runtime.context_char_budget)
+            self.assertEqual(event.get_extra('memory_slice_injection')['degraded'], target)
+            self.runtime.record_injection(event)
+            self.assertIn('常驻记忆仍按设置提供', await self.runtime.status(Event()))
+        with patch.object(self.runtime.core, 'retrieve', AsyncMock(side_effect=asyncio.CancelledError)):
+            with self.assertRaises(asyncio.CancelledError):
+                await self.runtime.recall(Event(mid='cancel'))
+        self.runtime.pins.save(sid, [])
+        with patch.object(self.runtime.core, 'retrieve', AsyncMock(side_effect=RuntimeError)):
+            self.assertEqual(await self.runtime.recall(Event(mid='no-pins')), '')
+
+    async def test_pin_save_lock_timeout_preserves_old_selection(self):
+        sid = (await self.runtime.ingest(Event()))['space_id']
+        e = self.runtime.core.create_event(sid, EventInput(title="常驻", body="正文"))
+        self.runtime.pins.save(sid, [e['id']])
+        with self.runtime.core.store.connect() as blocker:
+            blocker.execute('BEGIN IMMEDIATE')
+            started = time.monotonic()
+            with self.assertRaises(MemoryError) as caught:
+                self.runtime.pins.save(sid, [])
+            self.assertEqual(caught.exception.status_code, 503)
+            self.assertLess(time.monotonic() - started, 2.5)
+        self.assertEqual(self.runtime.pins.ids(sid), [e['id']])
+        self.runtime.pins.save(sid, [])
+        self.assertEqual(self.runtime.pins.ids(sid), [])
+
+    async def test_pin_validation_and_write_share_locked_transaction(self):
+        import sqlite3
+        sid = (await self.runtime.ingest(Event()))['space_id']
+        e = self.runtime.core.create_event(sid, EventInput(title="常驻", body="正文"))
+        inspect = self.runtime.pins.inspect
+        def checked(*args, **kwargs):
+            self.assertTrue(kwargs['con'].in_transaction)
+            result = inspect(*args, **kwargs)
+            with self.runtime.core.store.connect() as other:
+                other.execute('PRAGMA busy_timeout=0')
+                with self.assertRaises(sqlite3.OperationalError):
+                    other.execute('BEGIN IMMEDIATE')
+            return result
+        with patch.object(self.runtime.pins, 'inspect', side_effect=checked):
+            self.runtime.pins.save(sid, [e['id']])
+        self.assertEqual(self.runtime.pins.ids(sid), [e['id']])
+
+    async def test_pin_validation_budget_and_later_growth(self):
+        sid = (await self.runtime.ingest(Event()))['space_id']
+        ids = [self.runtime.core.create_event(sid, EventInput(title=f"事件{i}", body="记忆正文"))['id'] for i in range(4)]
+        self.runtime.pins.save(sid, ids[:3])
+        for invalid in [ids, [ids[0], ids[0]], ['missing']]:
+            with self.assertRaises(MemoryError):
+                self.runtime.pins.save(sid, invalid)
+            self.assertEqual(self.runtime.pins.ids(sid), ids[:3])
+        # Exact boundary includes escaped body, rules, all XML and prefix.
+        self.runtime.core.update_event(sid, ids[0], EventInput(title="边界", body="<&>" * 100))
+        required = self.runtime.pins.inspect(sid, ids[:1])['characters']
+        self.runtime.context_char_budget = required
+        self.runtime.pins.save(sid, ids[:1])
+        wire = await self.runtime.recall(Event("边界", mid="2"))
+        self.assertEqual(len(wire), required)
+        self.runtime.context_char_budget = required - 1
+        with self.assertRaises(MemoryError):
+            self.runtime.pins.save(sid, ids[:1])
+        self.runtime.context_char_budget = required
+        self.runtime.core.update_event(sid, ids[0], EventInput(title="边界", body="<&>" * 200))
+        with self.assertRaises(MemoryError):
+            await self.runtime.recall(Event("边界", mid="3"))
+        self.assertIn("超过上限", await self.runtime.status(Event(mid="4")))
+        self.runtime.core.delete_event(sid, ids[0])
+        self.assertTrue(self.runtime.pins.inspect(sid)['errors'])
+        self.runtime.pins.save(sid, [])
+        self.assertEqual(self.runtime.pins.inspect(sid)['characters'], 0)
+
+    async def test_pins_and_normal_recall_share_strict_budget(self):
+        await self.reset(context_char_budget=1800)
+        event = Event("陨石一号")
+        sid = (await self.runtime.ingest(event))['space_id']
+        ids = [self.runtime.core.create_event(sid, EventInput(title=f"陨石一号 {i}", body="陨石一号 " * 40, salience=1))['id'] for i in range(4)]
+        self.runtime.pins.save(sid, ids[:2])
+        wire = await self.runtime.recall(event)
+        self.assertLessEqual(len(wire), 1800)
+        for eid in ids[:2]:
+            self.assertEqual(wire.count(f'id="{eid}"'), 1)
+        self.assertEqual(wire.count('<memory-slice-rules '), 1)
+        self.assertEqual(event.get_extra('memory_slice_injection')['pinned'], 2)
+        self.runtime.record_injection(event)
+        self.assertEqual(self.runtime.core.store.list('astrbot_injection', sid)[0]['pinned'], 2)
+        self.runtime.core.update_event(sid, ids[0], EventInput(title="归档", body="正文", status="archived"))
+        with self.assertRaises(MemoryError):
+            self.runtime.pins.save(sid, ids[:1])
+
     async def test_private_maintenance_and_recall_use_host_model(self):
         event = Event()
         record = await self.runtime.ingest(event)

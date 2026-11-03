@@ -1,5 +1,8 @@
 """Platform identity, durable scope mapping and host lifecycle orchestration."""
 
+import logging
+import traceback
+from pathlib import Path
 import asyncio
 import hashlib
 import json
@@ -7,6 +10,7 @@ import uuid
 import time
 from datetime import datetime, timezone
 from .adapter import AstrBotModelAdapter
+from .pinned import PinnedMemories
 from .memory_slice.service import MemoryService
 from .memory_slice.context_protocol import text_parts
 from .memory_slice.context_assembly import assemble_context
@@ -40,6 +44,7 @@ class Runtime:
             context, str(config.get("provider_id", "")).strip()
         )
         self.core = MemoryService(directory, model=self.provider)
+        self.pins = PinnedMemories(self)
         self.lock = asyncio.Lock()
         self.closed = False
         options = config.get("memory_options", "{}")
@@ -348,35 +353,63 @@ class Runtime:
             current_context = text_parts(getattr(request, "system_prompt", "")) + text_parts(getattr(request, "contexts", [])) + text_parts(getattr(request, "prompt", ""))
             for part in getattr(request, "extra_user_content_parts", []):
                 current_context.extend(text_parts(part if isinstance(part, dict) else getattr(part, "text", "")))
-        event.set_extra("memory_slice_stage", "retrieve")
-        result = await self.core.retrieve(
-            record["space_id"],
-            RecallInput(
-                limit=self.recall_limit,
-                reply_to_person_id=parent.get("person_id"),
-                person_id=row["person_id"],
-                query=row["content"],
-                mention_ids=row["mention_ids"],
-                recent_messages=[
-                    {"role": m["role"], "content": m["content"]}
-                    for m in recent
-                ],
-                retrieval_mode=self.config.get("retrieval_mode", "local"),
-            ),
-        )
-        event.set_extra("memory_slice_stage", "assemble")
-        injection_config = dict(self.core.config_for(record["space_id"]),
-                                max_events=self.recall_limit,
-                                context_char_budget=self.context_char_budget - len(PREFIX) - 1)
-        assembled = assemble_context(result, injection_config, current_context)
-        wire = PREFIX + "\n" + assembled["context"] if assembled["context"] else ""
+        event.set_extra("memory_slice_stage", "pinned")
+        pinned = self.pins.inspect(record['space_id'])
+        if pinned['errors']:
+            from .memory_slice.errors import MemoryError
+            raise MemoryError(422, '；'.join(pinned['errors']))
+        pinned_context = pinned['context']
+        degraded = None
+        result = {'id': None, 'items': []}
+        retrieved_count = 0
+        assembled = {'context': '', 'omitted': [], 'selected': []}
+        try:
+            event.set_extra("memory_slice_stage", "retrieve")
+            result = await self.core.retrieve(
+                record["space_id"],
+                RecallInput(
+                    limit=self.recall_limit,
+                    reply_to_person_id=parent.get("person_id"),
+                    person_id=row["person_id"],
+                    query=row["content"],
+                    mention_ids=row["mention_ids"],
+                    recent_messages=[
+                        {"role": m["role"], "content": m["content"]}
+                        for m in recent
+                    ],
+                    retrieval_mode=self.config.get("retrieval_mode", "local"),
+                ),
+            )
+            event.set_extra("memory_slice_stage", "assemble")
+            retrieved_count = len(result['items'])
+            pinned_ids = set(pinned['event_ids'])
+            result = dict(result, items=[item for item in result['items'] if item['event_id'] not in pinned_ids])
+            remaining = self.context_char_budget - len(PREFIX) - 1 - (len(pinned_context) + 2 if pinned_context else 0)
+            injection_config = dict(self.core.config_for(record["space_id"]),
+                                    max_events=self.recall_limit,
+                                    context_char_budget=max(0, remaining))
+            assembled = assemble_context(result, injection_config, (current_context or []) + ([pinned_context] if pinned_context else []))
+        except Exception as exc:
+            # Cancellation is a BaseException and must continue to propagate.
+            stage = event.get_extra('memory_slice_stage')
+            degraded = stage
+            self.core.metrics.plugin_failures.labels(stage, 'operation_failed').inc()
+            frames = traceback.extract_tb(exc.__traceback__)
+            location = ';'.join(f'{Path(f.filename).name}:{f.lineno}:{f.name}' for f in frames[-4:])
+            logging.getLogger(__name__).warning(
+                "Memory Slice normal recall failed stage=%s type=%s location=%s; pinned memories retained",
+                stage, type(exc).__name__, location)
+            result = {'id': None, 'items': []}
+            assembled = {'context': '', 'omitted': [], 'selected': []}
+        combined = '\n\n'.join(part for part in (pinned_context, assembled['context']) if part)
+        wire = PREFIX + "\n" + combined if combined else ""
         codes = [x.get('code', 'duplicate') for x in assembled['omitted']]
-        summary = dict(recall_id=result['id'], retrieved=len(result['items']),
+        summary = dict(recall_id=result['id'], degraded=degraded, retrieved=retrieved_count,
                        deduplicated=len({x['event_id'] for x in assembled['omitted'] if x.get('code') is None}),
                        fragments=sum(len(x['fragments']) for x in assembled['selected']),
                        partial_events=sum(bool(x['partial']) for x in assembled['selected']),
-                       selected=len(assembled['selected']), characters=len(wire),
-                       outcome='ready' if assembled['context'] else 'no_match' if not result['items'] else 'budget' if 'char_budget' in codes else 'duplicate',
+                       pinned=len(pinned['events']), selected=len(assembled['selected']) + len(pinned['events']), characters=len(wire),
+                       outcome='ready' if wire else 'degraded' if degraded else 'no_match' if not result['items'] else 'budget' if 'char_budget' in codes else 'duplicate',
                        elapsed_ms=round((time.perf_counter()-started)*1000, 2))
         event.set_extra('memory_slice_injection', summary)
         event.set_extra('memory_slice_stage', 'inject')
@@ -390,8 +423,8 @@ class Runtime:
         summary = dict(summary, outcome=outcome or ('injected' if summary['selected'] else summary['outcome']))
         metrics = self.core.metrics
         metrics.plugin_injections.labels(summary['outcome']).inc()
-        for stage in ('retrieved', 'deduplicated', 'selected'):
-            metrics.plugin_events.labels(stage).observe(summary[stage])
+        for stage in ('retrieved', 'deduplicated', 'selected', 'pinned'):
+            metrics.plugin_events.labels(stage).observe(summary.get(stage, 0))
         metrics.plugin_seconds.observe(summary['elapsed_ms']/1000)
         metrics.context_chars.observe(summary['characters'] if summary['outcome'] == 'injected' else 0)
         metrics.recall_fragments.observe(summary['fragments'] if summary['outcome'] == 'injected' else 0)
@@ -439,6 +472,10 @@ class Runtime:
         jobs = self.core.jobs(sid)
         last = max(jobs, key=lambda j: j["created_at"]) if jobs else None
         status = f"记忆切片：{len(events)} 件事，{sum(not m['processed'] for m in messages)} 条待整理消息。"
+        pins = self.pins.inspect(sid)
+        status += f"\n常驻：{len(pins['event_ids'])}/3 件，占用 {pins['characters']}/{pins['limit']} 字符"
+        if pins['errors']:
+            status += '\n' + '；'.join(pins['errors'])
         health = self.core.embeddings.status(sid)
         status += f"\n召回：{self.config.get('retrieval_mode', 'local')}；向量已索引 {health['indexed_chunks']}，待索引 {health['pending_chunks']}。"
         if health['last_error']:
@@ -447,6 +484,8 @@ class Runtime:
         if latest:
             info = latest[0]
             status += f"\n最近注入：召回 {info['retrieved']} 件，去重 {info['deduplicated']} 件，选中 {info['selected']} 件 / {info['characters']} 字符；{info['outcome']}，{info['elapsed_ms']}ms"
+        if latest and latest[0].get('degraded'):
+            status += '\n上轮普通召回暂不可用，常驻记忆仍按设置提供。'
         if last:
             status += f"\n最近整理：{last['status']}（{last['id']}）"
             if last.get("error"):

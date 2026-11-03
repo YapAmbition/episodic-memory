@@ -245,8 +245,14 @@ export function EventModal({
             </h2>
           </div>
           <div className="modal-actions">
+            {event && !editing && <button className="button secondary compact" disabled={saving} onClick={async()=>{
+              setSaving(true);setError("");
+              try {await put(`/spaces/${sid}/events/${id}/freeze`,{frozen:!event.frozen,expected_version:event.version});onSaved();setEvent(await api<MemoryEvent>(`/spaces/${sid}/events/${id}`));}
+              catch(e){setError(e instanceof Error?e.message:"设置失败");}finally{setSaving(false);}
+            }}>{event.frozen ? "解冻事件" : "冻结事件"}</button>}
+
             {event && !editing && (
-              <button className="button secondary compact" onClick={beginEdit}>
+              <button className="button secondary compact" onClick={beginEdit} disabled={event.frozen}>
                 <PencilLine size={14} />
                 编辑
               </button>
@@ -260,6 +266,7 @@ export function EventModal({
             </button>
           </div>
         </div>
+        {event?.frozen && <p className="subtle-note">已冻结：整理不会追加或改写此事件；后续进展另建关联事件。需要编辑、合并或拆分时请先解冻。</p>}
         {error && (
           <div role="alert" className="inline-error">
             {error}

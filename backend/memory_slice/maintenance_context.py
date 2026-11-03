@@ -14,6 +14,7 @@ from .store import dt
 PROTOCOL = """
 输出 processed_through_message_id：本次连续处理前缀的最后消息 ID；全部暂缓则为 null，并给 waiting_reason。前缀内每条消息必须用于事件、强化或 ignored_messages，不能有空洞。尾部允许等待补充，不要把未得到回答本身记录成事情。事情不必结束，但记忆应能独立理解。
 force_progress=true 时必须处理本批全部 new_messages：有事实就记阶段性进展，无可理解信息则明确忽略并说明理由，不得虚构结局。previous_dialogue 只读，不能作为本轮来源。
+frozen=true 的事件已冻结，仅可作为只读背景：不得追加、改写、合并或拆分。后续进展或更正应新建事件，以 links 关联原事件，不得因为冻结而忽略新事实。
 后端使用追加协议：已有事件 body 只写新增内容或更正，不得重写旧正文。
 fragment 是本条原始消息的字符范围，后续片段可能尚未提供。source_ids 使用原消息 ID。
 existing_events 仅为有预算限制的候选，不是全库。retrieval 描述可想起程度，不表示事实可信度。
@@ -111,6 +112,7 @@ def segments(body, query, max_chars=1200):
 
 def material(event, info, query, excerpt_chars):
     item = {key: event.get(key) for key in ("id", "title", "person_ids", "occurred_at", "learned_at", "status", "anchors", "salience", "links")}
+    item["frozen"] = bool(event.get("frozen"))
     item.update(retrieval=info, body_chars=len(event["body"]), segments=segments(event["body"], query, excerpt_chars))
     item["body_complete"] = sum(part["end"] - part["start"] for part in item["segments"]) == len(event["body"])
     return item
@@ -210,7 +212,7 @@ def prepare(store, sid, originals, settings, config, at, prompt, limit=None, mes
         for excerpt_chars in (1200, 350, 0):
             item = material(by_id[eid], info, query, excerpt_chars)
             if excerpt_chars == 0:
-                item = {key: item[key] for key in ("id", "title", "status", "body_chars", "body_complete", "segments", "retrieval", "anchors")}
+                item = {key: item[key] for key in ("id", "title", "status", "frozen", "body_chars", "body_complete", "segments", "retrieval", "anchors")}
                 item["anchors"] = {kind: sorted(values, key=lambda value: value.lower() in query.lower(), reverse=True)[:3] for kind, values in item["anchors"].items()}
             data["existing_events"].append(item)
             size = len(serialize(item))

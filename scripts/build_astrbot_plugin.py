@@ -82,7 +82,7 @@ def build(output, build_frontend=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v0.3.3.zip")))
+    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v0.3.4.zip")))
     parser.add_argument(
         "--skip-frontend-build",
         action="store_true",

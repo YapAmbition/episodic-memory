@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "test": "tsc --target ES2022 --module ES2022 --skipLibCheck --outDir .test-build src/monitoringMetrics.ts src/retrievalUi.ts src/maintenanceUi.ts src/types.ts && node --test tests/*.test.mjs"
+    "test": "tsc --target ES2022 --module ES2022 --skipLibCheck --outDir .test-build src/monitoringMetrics.ts src/retrievalUi.ts src/maintenanceUi.ts src/types.ts src/memoryGraph.ts && node --test tests/*.test.mjs"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

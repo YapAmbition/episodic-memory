@@ -29,6 +29,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
             access_token=TOKEN,
             frontend_dir=FRONTEND,
             scope_info=self.runtime.scope_info,
+            pinned_memories=self.runtime.pins,
         )
         self.client = httpx.AsyncClient(
             transport=httpx.ASGITransport(app=self.app),
@@ -40,6 +41,34 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         await self.client.aclose()
         await self.runtime.close()
         self.tmp.cleanup()
+
+    async def test_pinned_and_frozen_are_independent(self):
+        e = self.runtime.core.create_event(self.sid, EventInput(title="约定", body="每周三浇花"))
+        url = self.base + '/events/' + e['id']
+        response = await self.client.put(url+'/freeze', json={'frozen': True, 'expected_version': e['version']})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.runtime.pins.ids(self.sid), [])
+        self.assertEqual((await self.client.put(self.base+'/pinned-memories', json=[e['id']])).status_code,200)
+        wire = await self.runtime.recall(Event('聊点别的', mid='2'))
+        self.assertIn('每周三浇花',wire)
+        self.assertEqual((await self.client.put(url,json={'title':'改写','body':'不允许'})).status_code,409)
+        self.assertEqual((await self.client.put(self.base+'/pinned-memories', json=[])).status_code,200)
+        self.assertTrue((await self.client.get(url)).json()['frozen'])
+        self.assertEqual((await self.client.put(url+'/freeze',json={'frozen':False})).status_code,200)
+        self.assertEqual((await self.client.put(url,json={'title':'改写','body':'允许'})).status_code,200)
+
+    async def test_pinned_selection_api(self):
+        url = self.base + '/pinned-memories'
+        self.assertEqual((await self.client.get(url)).json()['event_ids'], [])
+        e = self.runtime.core.create_event(self.sid, EventInput(title="约定", body="完整正文"))
+        response = await self.client.put(url, json=[e['id']])
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['event_ids'], [e['id']])
+        for invalid in [[e['id']] * 4, ['missing']]:
+            self.assertEqual((await self.client.put(url, json=invalid)).status_code, 422)
+            self.assertEqual((await self.client.get(url)).json()['event_ids'], [e['id']])
+        self.assertEqual((await self.client.put(url, json=[], headers={'Authorization': 'Bearer invalid'})).status_code, 401)
+        self.assertEqual((await self.client.put(url, json=[])).json()['event_ids'], [])
 
     async def test_web_uses_exact_same_instance_without_owning_lifecycle(self):
         scheduler = self.runtime.core.scheduler_task

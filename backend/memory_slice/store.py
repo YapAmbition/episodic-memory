@@ -130,16 +130,24 @@ class Store:
             rows = con.execute("SELECT data,version FROM records WHERE kind=? AND space_id=? ORDER BY rowid", (kind, space_id))
         return [dict(json.loads(row["data"]), version=row["version"]) for row in rows]
 
-    def put(self, kind, item, space_id=None, expected=None, con=None):
+    def put(self, kind, item, space_id=None, expected=None, con=None, *, allow_freeze_change=False):
         if con is None:
             with self.connect() as own:
-                return self.put(kind, item, space_id, expected, own)
+                return self.put(kind, item, space_id, expected, own, allow_freeze_change=allow_freeze_change)
         item = dict(item)
         item.pop("version", None)
         space_id = space_id or item.get("space_id") or item["id"]
         old = con.execute("SELECT data,version FROM records WHERE kind=? AND id=?", (kind, item["id"])).fetchone()
         if expected is not None and (not old or old["version"] != expected):
             raise HTTPException(409, "此记录已被更新，请刷新后重试")
+        if kind == "event" and old:
+            previous = json.loads(old["data"])
+            if bool(previous.get("frozen")) != bool(item.get("frozen")) and not allow_freeze_change:
+                raise HTTPException(409, "请通过冻结接口改变冻结状态")
+            if previous.get("frozen"):
+                mutable = {"version", "updated_at", "reinforcements", "frozen"}
+                if any(previous.get(k) != item.get(k) for k in (previous.keys() | item.keys()) - mutable):
+                    raise HTTPException(409, "事件已冻结，请先解冻再修改")
         if kind == "event" and old:
             con.execute("INSERT INTO versions VALUES(?,?,?,?,?)", (new_id("rev"), item["id"], space_id, old["data"], iso()))
         version = old["version"] + 1 if old else 1
