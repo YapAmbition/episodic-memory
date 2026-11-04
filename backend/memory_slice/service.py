@@ -13,7 +13,7 @@ from pydantic import ValidationError
 
 from .context_protocol import query_dialogue
 from .diagnostics import job_diagnostic
-from .focus import select_messages, focus_prompt, validate_focus, cleanup_buffer
+from .focus import select_messages, focus_prompt, validate_focus, cleanup_buffer, recall_person_keys, matches_focus
 from .conversation import ordered_messages
 from .engine import build_context, retrieve_events, event_view, strength_curve
 from .model import parse_json, ContextLimitError, OutputLimitError
@@ -229,11 +229,11 @@ class MemoryService:
             strategy = "hybrid_embedding" if requested == "hybrid" else "hybrid_local"
             for pid in set(body.mention_ids + ([body.person_id] if body.person_id else []) + ([body.reply_to_person_id] if body.reply_to_person_id else [])):
                 self.store.get("person", pid, sid)
-            config = dict(config, _interaction_ids=body.mention_ids + ([body.reply_to_person_id] if body.reply_to_person_id else []))
+            config = dict(config, _recall_person_keys=recall_person_keys(self.store.list("person", sid)), _interaction_ids=body.mention_ids + ([body.reply_to_person_id] if body.reply_to_person_id else []))
             at = dt(body.at or utcnow())
             dialogue = ("\n".join([m.get("content", "") for m in body.recent_messages] + [body.query])[-20000:]
                         if structured else query_dialogue(body.query, body.current_context if body.current_context is not None else [m.get("content", "") for m in body.recent_messages]))
-            catalog = [e for e in self.store.event_catalog(sid) if not body.filter_by_focus or not config["focus_person_id"] or config["focus_person_id"] in e["person_ids"]]
+            catalog = [e for e in self.store.event_catalog(sid) if not body.filter_by_focus or matches_focus(e, config)]
             expanded, warnings = {}, []
             timings, diagnostic = {}, {}
             retrieved_at = time.perf_counter()
@@ -268,7 +268,13 @@ class MemoryService:
             matches = {eid: {"score": score, "reason": "Embedding similarity"} for eid, score in semantic.items() if eid in candidates}
             timings["candidate_retrieval"] = round((time.perf_counter() - retrieved_at) * 1000, 3)
             graph_at = time.perf_counter()
-            current_catalog = [e for e in self.store.event_catalog(sid) if not body.filter_by_focus or not config["focus_person_id"] or config["focus_person_id"] in e["person_ids"]]
+            # Embedding awaits allow identity/config/event edits. Revalidate both
+            # seeds and graph membership; graph_pool intentionally retains seeds.
+            config = dict(config, focus_person_id=self.config_for(sid)["focus_person_id"],
+                          _recall_person_keys=recall_person_keys(self.store.list("person", sid)))
+            current_catalog = [e for e in self.store.event_catalog(sid) if not body.filter_by_focus or matches_focus(e, config)]
+            allowed_ids = {e["id"] for e in current_catalog if e["status"] != "archived" and dt(e["learned_at"]) <= at}
+            ids = [eid for eid in ids if eid in allowed_ids]
             pool_ids, graph_omitted = (ids, 0) if search_only else graph_pool([e for e in current_catalog if dt(e["learned_at"]) <= at], ids, config)
             events = self.store.get_events(sid, pool_ids)
             matches = {eid: match for eid, match in matches.items() if any(e["id"] == eid and e["version"] == candidates[eid]["version"] for e in events)}

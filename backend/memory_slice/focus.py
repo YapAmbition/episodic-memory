@@ -5,13 +5,32 @@ from datetime import timedelta
 from .errors import MemoryError as HTTPException
 from .store import dt, iso, utcnow
 
+def recall_person_keys(people):
+    """Request-local identities; callers must supply only the selected space's people."""
+    return {p['id']: ('uid', p['external_uid']) if isinstance(p.get('external_uid'), str) and p['external_uid'].strip()
+            else ('id', p['id']) for p in people}
+
+
+def person_key(pid, config):
+    return config.get('_recall_person_keys', {}).get(pid, ('id', pid))
+
+
+def matches_focus(event, config):
+    focus = config.get('focus_person_id')
+    return not focus or person_key(focus, config) in {person_key(pid, config) for pid in event.get('person_ids', [])}
+
+
 def person_score(event, config, speaker=None):
     focus = config.get('focus_person_id')
-    if not focus or focus not in event.get('person_ids', []):
+    if not focus or not matches_focus(event, config):
         return 0.0
-    others = set(config.get('_interaction_ids', [])) | ({speaker} if speaker else set())
-    others.discard(focus)
-    return .25 + (.75 * len(others.intersection(event['person_ids'])) / len(others) if others else 0)
+    # Equivalent IDs count once, including mentions, replies and the speaker.
+    others = {person_key(pid, config) for pid in config.get('_interaction_ids', [])}
+    if speaker:
+        others.add(person_key(speaker, config))
+    others.discard(person_key(focus, config))
+    participants = {person_key(pid, config) for pid in event.get('person_ids', [])}
+    return .25 + (.75 * len(others.intersection(participants)) / len(others) if others else 0)
 
 def named_focus(text, focus, people):
     target = next((p for p in people if p['id'] == focus), {})

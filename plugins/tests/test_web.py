@@ -58,7 +58,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         payload = {"query": "陨石一号", "retrieval_mode": "local", "trace": True}
         previous = await self.client.post(self.base+"/context", json=payload)
         self.assertEqual(previous.status_code, 200, previous.text)
-        self.assertNotIn(event["id"], previous.json()["context"])
+        self.assertIn(event["id"], previous.json()["context"])
         spaces = (await self.client.get("/api/v1/spaces")).json()
         policy = next(s for s in spaces if s["id"] == self.sid)["host"]["injection_policy"]
         payload["filter_by_focus"] = policy["filter_by_focus"]
@@ -69,7 +69,7 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         self.runtime.config["recall_filter_by_focus"] = True
         payload["filter_by_focus"] = self.runtime.scope_info(self.sid)["injection_policy"]["filter_by_focus"]
         restricted = await self.client.post(self.base+"/context", json=payload)
-        self.assertNotIn(event["id"], restricted.json()["context"])
+        self.assertIn(event["id"], restricted.json()["context"])
 
     async def test_recovery_records_are_authenticated_readonly_and_portable(self):
         core=self.runtime.core

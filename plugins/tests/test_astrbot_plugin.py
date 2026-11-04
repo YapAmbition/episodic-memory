@@ -165,9 +165,9 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         result = copier.copy(sid, CopyInput(target_space_id=target, preview_token=preview["preview_token"]))
         copied = result["event_map"][original["id"]]
         before = self.runtime.core.store.get("event", copied, target)
-        # The existing core default still filters old-platform identities.
+        # Focus filtering now matches the imported identity by UID.
         strict = await self.runtime.core.retrieve(target, RecallInput(query="陨石一号", retrieval_mode="local"))
-        self.assertNotIn(copied, [item["event_id"] for item in strict["items"]])
+        self.assertIn(copied, [item["event_id"] for item in strict["items"]])
         # A newly created target event must not mask the migrated event.
         self.runtime.core.create_event(target, EventInput(title="今天下雨", body="今天下雨了",
             person_ids=[self.runtime.core.config_for(target)["focus_person_id"]]))
@@ -182,7 +182,7 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         await self.reset(recall_filter_by_focus=True)
         self.assertEqual((await self.runtime.bind(Event(platform="napcat")))["space_id"], target)
         wire = await self.runtime.recall(Event("陨石一号", platform="napcat", mid="strict"))
-        self.assertNotIn(copied, wire)
+        self.assertIn(copied, wire)
         await self.reset(recall_filter_by_focus=False)
         self.assertEqual((await self.runtime.bind(Event(platform="napcat")))["space_id"], target)
         self.assertIn(copied, await self.runtime.recall(Event("陨石一号", platform="napcat", mid="restart")))
