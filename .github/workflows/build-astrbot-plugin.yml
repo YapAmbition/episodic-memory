@@ -1,7 +1,14 @@
 name: Build AstrBot Plugin ZIP
 
 on:
+  push:
+    tags:
+      - 'astrbot-v*'
   workflow_dispatch:
+
+concurrency:
+  group: astrbot-plugin-publish
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -12,6 +19,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate release tag
+        if: github.event_name == 'push'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: python3 scripts/publish_astrbot_plugin.py --check-tag "$RELEASE_TAG"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -56,3 +70,33 @@ jobs:
           `astrbot_plugin_memory_slice-v*.zip`，在 AstrBot 选择「从文件安装」。
           不要上传外层 Artifact ZIP，也不要上传 GitHub 的源码 ZIP。
           SUMMARY
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/astrbot-v')
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: memory-slice-astrbot-${{ github.run_number }}
+          path: release-package
+      - name: Publish tested plugin to dedicated repository
+        env:
+          PLUGIN_PUBLISH_TOKEN: ${{ secrets.PLUGIN_PUBLISH_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          SOURCE_SHA: ${{ github.sha }}
+        run: |
+          version="${RELEASE_TAG#astrbot-v}"
+          python scripts/publish_astrbot_plugin.py \
+            --archive "release-package/astrbot_plugin_memory_slice-v${version}.zip" \
+            --tag "$RELEASE_TAG" --source-sha "$SOURCE_SHA"
+      - name: Publication summary
+        run: |
+          echo '已同步到 https://github.com/YapAmbition/memory-slice-astrbot-plugin 的 main 分支，并保留同名版本标签。' >> "$GITHUB_STEP_SUMMARY"

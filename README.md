@@ -27,6 +27,8 @@
 
 在 GitHub 仓库的 **Actions → Build AstrBot Plugin ZIP → Run workflow** 手动构建。成功后从该运行的 **Artifacts** 下载，解压外层 ZIP，再把里面的插件 ZIP 上传到 AstrBot。详见 [GitHub 构建说明](plugins/astrbot_plugin_memory_slice/README.md#在-github-上构建-zip)。
 
+插件独立发布仓库：[memory-slice-astrbot-plugin](https://github.com/YapAmbition/memory-slice-astrbot-plugin)。推送 `astrbot-v*` 标签会在测试通过后自动同步可安装文件；普通 push 不发布。凭据配置及发版命令见 [自动发布说明](plugins/astrbot_plugin_memory_slice/README.md#自动同步插件发布仓库)。
+
 ## 通过 Skill 接入 Agent（本地试用版）
 
 提供轻量 [Memory Slice Skill](skills/memory-slice/SKILL.md)：服务包独立存放，安装脚本用本地 `cp` 复制、校验 SHA256、建立 Python 虚拟环境并启动服务。Codex 以后台增量同步记录正式对话、Hook 仅召回注入；Qoder、DeepSeek Harness 及其他 Agent 可以按需调用。相同 Agent 的所有会话共享一个空间，未知 Agent 共用通用空间。

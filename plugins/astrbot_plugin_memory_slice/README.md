@@ -12,7 +12,7 @@
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
 5. 保存配置后重载插件，使当前实例和后台调度一起应用新配置。
 
-首次安装依赖可能需要联网下载 Python 包。ZIP 包含记忆核心源码，不需要从 PyPI 下载一个未发布的 memory-slice 包。尚未发布到插件市场，`metadata.yaml` 的 repo 留空；本仓库的插件子目录不是可直接从 Git URL 安装的独立仓库，需要先打包。
+首次安装依赖可能需要联网下载 Python 包。ZIP 包含记忆核心源码，不需要从 PyPI 下载一个未发布的 memory-slice 包。发布仓库为 https://github.com/YapAmbition/memory-slice-astrbot-plugin 。首次自动发布成功后，可以在 AstrBot 使用该仓库链接安装。开发仓库 `episodic-memory` 的插件子目录仍需先构建，不能直接用开发仓库链接安装。插件市场收录需要另行提交。
 
 ## 配置
 
@@ -123,9 +123,34 @@ plugin_data/astrbot_plugin_memory_slice/
 4. 打开成功的运行记录，在 **Artifacts** 下载 `memory-slice-astrbot-运行编号`。下载需要登录 GitHub，并拥有仓库读取权限。
 5. **先解压 GitHub 下载的外层 ZIP**，里面的 `astrbot_plugin_memory_slice-v版本.zip` 才是给 AstrBot 上传的安装包。
 
-构建产物保留 90 天（也受仓库/组织上限约束）。这个流程只生成下载产物，不创建 Release，不发布插件市场。需要长期对外提供下载时，可以把内层插件 ZIP 手动附到 GitHub Release；公开仓库的 Release 下载更方便。
+构建产物保留 90 天（也受仓库/组织上限约束）。手动运行只生成下载产物，不推送发布仓库、不创建 Release，也不提交插件市场。需要长期对外提供下载时，可以把内层插件 ZIP 手动附到 GitHub Release；公开仓库的 Release 下载更方便。
 
-不需要填写模型 API Key 或新增 GitHub Secrets，测试使用模拟宿主。GitHub 构建通过不代表 Windows + AstrBot 实机已经验收。
+手动构建 ZIP 不需要填写模型 API Key 或新增 GitHub Secrets，测试使用模拟宿主。GitHub 构建通过不代表 Windows + AstrBot 实机已经验收。
+
+## 自动同步插件发布仓库
+
+开发仍在 [episodic-memory](https://github.com/YapAmbition/episodic-memory) 完成。发布仓库由自动流程生成，不要在那里直接修改业务代码。
+
+一次性准备：在开发仓库 **Settings → Secrets and variables → Actions** 添加 `PLUGIN_PUBLISH_TOKEN`。使用 Fine-grained token，只授权 `YapAmbition/memory-slice-astrbot-plugin` 的 **Contents: Read and write**；不要把令牌写入代码。到期后更新同名 Secret。
+
+发版步骤（以下以当前 0.3.18 为例）：
+
+1. 确认 `metadata.yaml`、`main.py` 注册版本及说明中的版本一致；后续发布必须递增版本。
+2. 将代码和工作流提交、推送到开发仓库。
+3. 在要发布的提交上执行：
+
+```bash
+git tag astrbot-v0.3.18
+git push origin astrbot-v0.3.18
+```
+
+标签版本必须与 `metadata.yaml` 完全一致。普通分支 push 不触发发布，页面 Run workflow 仍只构建 ZIP。
+
+自动流程先运行前端测试、构建完整 ZIP、运行插件与后端测试；全部通过后，独立发布任务下载该 ZIP，将内容放入发布仓库根目录，更新 `main` 并创建同名标签。包含已编译前端及完整核心，不同步数据库、聊天记录、密钥、node_modules 或开发工作流。`release-info.json` 记录来源提交。
+
+发布不使用 force push；分支和标签原子推送。拒绝版本倒退、标签来源冲突及覆盖未知仓库内容。同一标签同一来源的重跑不会重复发布；凭据或网络失败可修好后在 Actions 重跑失败任务。目标分支若有保护规则，需允许发布身份正常推送，否则流程会失败且不覆盖远端。
+
+首次成功后，用发布仓库链接在 AstrBot 测试安装，再前往 AstrBot Cloud 提交市场收录；自动同步不会替你提交市场审核。
 
 ## 开发与测试
 
@@ -137,7 +162,7 @@ python3 -m unittest discover -s plugins/tests -v
 PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 ```
 
-构建脚本先在本机执行 React 生产构建（首次自动执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
+构建脚本先在本机执行 React 生产构建（每次先执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
 默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.18.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 

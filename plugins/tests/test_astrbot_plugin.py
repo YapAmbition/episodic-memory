@@ -871,6 +871,10 @@ class PackagingTests(unittest.TestCase):
         import hashlib
 
         archive = build(Path(PACKAGE.name) / "plugin.zip", build_frontend=False)
+        from publish_astrbot_plugin import read_package, version_of
+        metadata = (ROOT / "plugins/astrbot_plugin_memory_slice/metadata.yaml").read_text(encoding="utf-8")
+        published_files, _ = read_package(archive, "astrbot-v" + version_of(metadata))
+        self.assertTrue(any(name.startswith("frontend/assets/") for name in published_files))
         with zipfile.ZipFile(archive) as z:
             prefix = "astrbot_plugin_memory_slice/"
             manifest = json.loads(z.read(prefix + "core-manifest.json"))

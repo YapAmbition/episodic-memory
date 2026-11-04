@@ -7,6 +7,7 @@ import subprocess
 import shutil
 from pathlib import Path
 import zipfile
+from publish_astrbot_plugin import version_of
 
 ROOT = Path(__file__).resolve().parents[1]
 NAME = "astrbot_plugin_memory_slice"
@@ -48,7 +49,7 @@ def build(output, build_frontend=True):
         )
         subprocess.run([npm, "run", "build"], cwd=frontend, check=True)
         stamp.write_text(json.dumps(frontend_sources(), sort_keys=True))
-    if not stamp.is_file() or json.loads(stamp.read_text()) != frontend_sources():
+    if not stamp.is_file() or json.loads(stamp.read_text(encoding="utf-8")) != frontend_sources():
         raise RuntimeError("前端未构建或已过期，请重新打包，不要跳过前端构建")
     output = Path(output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -83,7 +84,7 @@ def build(output, build_frontend=True):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v0.3.18.zip")))
+    parser.add_argument("--output", default=str(ROOT / "dist" / (NAME + "-v" + version_of((ROOT / "plugins" / NAME / "metadata.yaml").read_text(encoding="utf-8")) + ".zip")))
     parser.add_argument(
         "--skip-frontend-build",
         action="store_true",
