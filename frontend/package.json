@@ -10,6 +10,7 @@
     "test": "tsc --target ES2022 --module ES2022 --skipLibCheck --outDir .test-build src/monitoringMetrics.ts src/retrievalUi.ts src/maintenanceUi.ts src/types.ts src/memoryGraph.ts src/api.ts && node --test tests/*.test.mjs"
   },
   "dependencies": {
+    "@antv/g6": "^5.1.1",
     "lucide-react": "^0.468.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
