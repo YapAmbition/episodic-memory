@@ -172,26 +172,13 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 接口依据：[AstrBot 消息钩子](https://docs.astrbot.app/dev/star/guides/listen-message-event.html)、[模型接口](https://docs.astrbot.app/dev/star/guides/ai.html)、[插件配置](https://docs.astrbot.app/dev/star/guides/plugin-config.html)、[数据目录](https://docs.astrbot.app/dev/star/guides/storage.html)。
 
-## 可选远程向量召回（0.3.1）
+## 可选远程向量召回
 
 在 AstrBot 插件配置设置 `retrieval_mode=hybrid`、`embedding_enabled=true`，填写 `embedding_base_url`（例如 `https://example.com/v1`）、`embedding_model` 和 `embedding_api_key`，保存并重载插件。调用的是该地址的 `/embeddings`，不复用聊天模型，不下载本地模型。
 
-`embedding_timeout_seconds` 默认 1.5 秒；`embedding_failure_threshold` 默认 3 次，`embedding_cooldown_seconds` 默认 30 秒。超时、连接失败、401/403、429、服务器错误及错误向量响应均退回程序召回，不阻止聊天注入和回复保存。冷却后允许单个探测请求，成功自动恢复。
+`embedding_timeout_seconds` 默认 1.5 秒，当前召回和后台索引共用；索引持续超时时可调到 10 秒验证，但同时会放宽聊天等待上限。独立索引超时尚未实现。`embedding_failure_threshold` 默认 3 次，`embedding_cooldown_seconds` 默认 30 秒。超时、连接失败、401/403、429、服务器错误及错误向量响应均退回程序召回，不阻止聊天注入和回复保存。冷却后允许单个探测请求，成功自动恢复。
 
 后台自动分片建立索引，事件编辑、更换模型后补建，未就绪时使用程序查找。`/记忆切片` 可查看索引进度和安全错误分类，管理网页的设置页只读展示连接状态，运行监控展示索引和熔断指标。群/私聊仍按原有空间隔离。旧 `llm` 配置升级为 `local`；生成式模型仅负责整理，召回不调用它。
-
-
-### 请求上下文与记忆去重
-
-旧兼容接口（当前插件不使用）：核心 `/context` 输入新增可选 `current_context: string[]`，传入当前模型请求中实际存在的文本块（包括系统提示、历史、本轮输入和额外文本）。不传时保持原有召回行为；不要用永久会话历史代替实际请求。核心扫描全部文本检查完整记忆块，查询线索按近期字符预算选择，并排除协议记忆及规则块，不把全部上下文发送给 Embedding。
-
-事件输出使用 `<memory-slice id="event_123" revision="2" supersedes="1">完整正文</memory-slice>`；revision 复用事件存储版本，修改事件会递增。正文 XML 转义。同 ID 在当前上下文已有同版或更新版本时跳过，旧版则输出最新完整记录，去重原因位于 `omitted`。旧 `<event>` 格式不会误判为新版协议。
-
-规则使用 `<memory-slice-rules version="1">…</memory-slice-rules>`；有记忆输出且当前上下文缺少本版完整规则时附带。上下文裁剪后可再次注入，不维护会话永久已读状态。规则占用上下文字符预算。标签检测不是安全认证，接入方应传递真实请求内容。
-
-AstrBot 插件从 ProviderRequest 读取当前可见文本，在插件侧调用共用组装函数去重，仍使用临时注入，不修改历史；后续框架裁剪或其他插件修改不在此快照内。状态命令为 `/记忆切片`，召回仅支持 local/hybrid；hybrid 可能增加聊天延迟，失败自动降级。
-
-已消费聊天原文默认在处理完成 30 天后由内嵌核心自动清理，事件记忆保留。可在内嵌前端「整理」设置中配置，或在高级记忆配置设置 `message_cleanup_enabled` 和 `processed_message_retention_days`。旧数据没有完成时间时从新版首次清理检查起算，不会升级后立即删除。
 
 
 ### 插件侧召回与去重
@@ -200,7 +187,7 @@ AstrBot 插件从 ProviderRequest 读取当前可见文本，在插件侧调用�
 
 插件读取 ProviderRequest 当前实际可见的系统提示、全部历史、当前输入和额外文本，在本地调用共用组装函数完成事件/片段版本去重，再应用条数及字符预算，最后临时注入。规则和标签也计入字符数；完整同版记忆不重复注入，同版缺失片段可补充，新版会标明更新关系。不会把完整历史交给核心进行去重。只检查当前请求快照，不用永久“已发送”标记，记忆从上下文移除后可以再次注入。
 
-去重后可能少于设置条数或为空，不会循环补查。未提供 ProviderRequest 时无法判断现有上下文，仍执行数量和长度限制。旧安装若没有这两个专用字段，兼容读取高级 JSON 的 `max_events`/`context_char_budget`；专用字段存在时优先采用专用字段。前文关于核心 `/context` 去重的说明仅适用于旧兼容接口，插件现使用 `retrieve` + 本地组装流程。
+去重后可能少于设置条数或为空，不会循环补查。未提供 ProviderRequest 时无法判断现有上下文，仍执行数量和长度限制。旧安装若没有这两个专用字段，兼容读取高级 JSON 的 `max_events`/`context_char_budget`；专用字段存在时优先采用专用字段。插件使用 `retrieve` + 本地组装流程；当前记忆片段协议为 v2。
 
 
 0.3.3：插件最终注入指标使用 `memory_plugin_injections_total`、`memory_plugin_events`、`memory_plugin_duration_seconds`；`/记忆切片` 展示最近一次结果。管理页面显示插件的每轮实际限制。近期线索按入库顺序限量读取，引用按 ID 查找。失败日志含阶段、错误分类、诊断编号及代码位置，不输出异常正文。
@@ -223,50 +210,13 @@ AstrBot 插件从 ProviderRequest 读取当前可见文本，在插件侧调用�
 
 冻结后禁止自动追加、手工改写和合并/拆分，整理时新进展应另建事件关联原事件。常驻选择列表显示冻结状态。冻结不影响召回、遗忘权重和重提强化；已冻结的常驻正文不会因自动整理增长。未冻结的常驻仍按原容量策略处理。
 
-### 复制到其他空间
+### 复制与跨机器迁移
 
-侧栏「复制到其他空间」复制事件、关联、聊天记录、片段和版本历史。源空间完整保留，双方之后独立使用，不自动同步。复制不调用大模型、不合并相似事件；不会复制模型密钥、空间配置、关注对象设置、接入连接或同步进度。
+在内置网页侧栏「复制到其他空间」操作，本机复制保留源空间，双方之后独立使用。跨机器先导出 JSON，再到目标导入；导入前自动备份，重复事件可跳过或覆盖，冻结目标不能覆盖。
 
-副本获得新的全局唯一 ID，保留 `origin_id` 标记共同来源；旧记录未存此字段时以自身 ID 为来源。重复复制（包括 A→B→C）按来源识别，事件默认跳过，可逐件或批量选择覆盖；消息与会话不会重复添加。覆盖保持目标 ID，保存目标旧版本，按目标自己的版本号递增；双方版本号不能用于判断谁更新。冻结的目标事件禁止覆盖。人物按来源、相同平台与 UID 或已有身份映射复用；同名不自动合并，歧义映射会阻止复制。
+**迁移到新的聊天平台时，先发送一条消息生成目标聊天空间，再导入那个空间。** 同名空间不会自动绑定。模型配置、密钥与向量缓存不随文件迁移；目标需要重新配置，索引随后自动补建。
 
-预览后确认提交。默认保留目标常驻，可勾选源空间的常驻副本；映射去重后最多 3 件，按复制后的正文校验目标字符预算。数据变化需重新预览；运行中的整理或回复会阻止复制。整个操作原子提交，失败回滚。兼容的向量可复用，否则由目标后台索引补齐（启用远程 embedding 时，后续索引可能调用该服务）。
-
-接口：`POST /api/v1/spaces/{source}/copy/preview`，传 `target_space_id` 获取预览；`POST /api/v1/spaces/{source}/copy` 传目标与 `preview_token` 提交。可选字段：
-
-- `conflict_policy`：`skip`（默认）或 `overwrite`。
-- `event_choices`：以源事件 ID 为键、`skip` / `overwrite` 为值，覆盖全局策略。
-- `pinned_event_ids`：预览列出的常驻候选 ID；省略保留目标常驻，空数组取消目标常驻。可同时选同源的源/目标候选，提交时映射去重。
-
-旧 `/merge`、`/merge/preview` 空间搬迁接口返回 410，旧 `/bindings` 管理接口已移除。此前已执行的搬迁不会自动恢复。
-
-数据库使用 `PRAGMA user_version` 管理结构版本。首次升级旧数据库前自动备份到数据目录下 `backups/memory-before-schema-1-*.sqlite3`，旧事件 ID 与内容不改写。程序拒绝打开比自身支持版本更新的数据库。兼容指新版读取旧数据；回退到没有版本检查的旧程序时，应恢复升级前备份，不能直接继续写入升级后的数据库。
-
-
-### 文件迁移（跨机器 / 独立服务与 AstrBot）
-
-在侧栏「复制到其他空间」进入「文件导入 / 导出」。导出一个空间的 `memory-slice-transfer.json`，在另一台机器上传，选择已有空间或创建新空间，校验预览后点击「备份并导入」。顶部「导出记忆」也下载这种迁移包；旧 `/export` 接口仍提供阅读用 Markdown ZIP，不能作为迁移包导入。
-
-- 新建空间使用新 ID；重名自动加“（导入）”后缀。导入现有空间按选定 ID 操作，不按名称自动匹配。
-- AstrBot 推荐先在新平台发一条消息，再导入该聊天对应的空间。新建独立空间不会自动绑定群聊。双方配置、关注对象设置和接入连接保留，不迁移密钥、模型配置、同步进度与向量缓存。
-- 包含事件、人物、片段、关联、版本历史、冻结状态与常驻候选。统一包含仍保留的聊天正文与整理进度，已移除省略正文选项；已被定期清理的正文无法恢复。旧版省略正文的包会提示重新导出。已导入的旧版省略记录在再次导入完整包时可补全，按正常清理流程清除的正文不会恢复。
-- 事件来源标识跨机器保留。重复事件默认跳过，可逐件覆盖；覆盖保留目标 ID 与旧版本，冻结目标禁止覆盖。常驻默认保留目标选择，可选来自文件的常驻副本，仍校验 3 件和字符预算。
-- 目前格式版本 1，单包最大 32 MiB、最多 100000 条记录。文件为 UTF-8 JSON，含 SHA-256 完整性校验；校验用于发现损坏，不是来源签名或加密。
-- 预览只暂存目标空间和空间名称列表，不复制其他空间正文。正式导入只做一次整库备份，通过 WAL 只读快照完成，不持有数据库写锁；其他空间可继续写入。差异计算在写锁之外完成，最终核对目标版本并在单个事务中写入。失败整体回滚。临时文件自动清理；备份不会自动删除，需要预留磁盘空间。
-- 导入有独立操作编号。连接中断时先点「查询上次导入结果」，刷新同一标签页后也能查询。同一编号、相同请求重试返回原结果；不同内容使用相同编号会拒绝。
-
-接口：`GET /api/v1/spaces/{sid}/transfer` 导出（旧参数 `include_messages=false` 返回 422）；`POST /api/v1/transfers/operation-id` 获取操作编号，兼容普通 HTTP；`POST /api/v1/transfers/preview` 和 `/transfers/import` 接收 `{package, operation_id, target_space_id}`，新建时省略目标并可传 `new_space_name`。导入需带预览的 `preview_token`，冲突与常驻选择沿用复制接口的 `conflict_policy`、`event_choices`、`pinned_event_ids`（ID 使用预览返回值）。`GET /api/v1/transfers/operations/{operation_id}` 查询成功结果。AstrBot 所有接口仍需控制台令牌。
-
-#### 从导入前备份恢复
-
-成功页面显示服务端完整备份路径，位于数据目录 `backups/before-import-*.sqlite3`。这是整库快照，包含其他空间；恢复会回到快照时刻。先停止独立后端（`./scripts/dev.sh stop`）或整个 AstrBot，保留导入后的新聊天，再运行：
-
-```sh
-python scripts/restore_memory_backup.py --backup "/备份路径/before-import-xxx.sqlite3" --database "/数据目录/memory.sqlite3" --service-stopped
-```
-
-使用安装了项目依赖的 Python。AstrBot 插件目录内也包含 `restore_memory_backup.py`，在插件目录运行时去掉命令中的 `scripts/`；使用 AstrBot 的 Python 环境。Windows 路径同样放在引号内。
-
-恢复工具先获取与服务共享的跨进程互斥锁，运行中的新版服务会阻止恢复，恢复期间也不能启动服务。随后检查备份表结构、主键、空间配置及业务记录，校验通过才把当前数据库另存为 `backups/before-restore-*.sqlite3`，然后通过 SQLite 备份接口恢复并检查完整性。旧版服务尚无互斥锁，升级或恢复前仍须停止；不要在服务运行时执行。工具完成后再启动服务；如需撤回恢复，可以用刚保存的 before-restore 文件重复上述流程。
+新导出包格式为 2，兼容旧版本 1 的完整包；已清理聊天正文无法从包中恢复。备份不自动删除。完整规则和停止服务后的恢复命令见 [数据迁移与恢复指南](https://github.com/YapAmbition/episodic-memory/blob/main/docs/data-management.md)。插件目录内提供 `restore_memory_backup.py`，请使用 AstrBot 的 Python 环境运行。
 
 ### Windows 启动时提示 unable to open database file
 

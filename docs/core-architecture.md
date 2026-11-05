@@ -1,100 +1,82 @@
-# 0.7.0：可嵌入记忆核心
+# 核心架构与开发决策
 
-0.6.0 提取公共核心；0.7.0 加入可选远程 embedding 并移除 LLM 联想召回。后续新增 [AstrBot 插件](../plugins/astrbot_plugin_memory_slice/README.md)，构建时打包同一份核心源码。
+开发入口为 [AGENTS.md](../AGENTS.md)，用户启动方式见 [README](../README.md)。本文描述当前分工，不以历史发布版本为边界。
+
+## 一份核心，多个宿主
+
+| 位置 | 职责 |
+| --- | --- |
+| `backend/memory_slice/service.py` | `MemoryService` 公共入口、生命周期、事务编排和整理调度 |
+| `store.py`、`migrations.py`、`database_guard.py` | SQLite、结构升级、数据库占用保护 |
+| `retrieval.py`、`engine.py`、`embedding.py` | 程序候选、关联传播、评分与远程向量 |
+| `recall_fragments.py`、`event_fragments.py` | 事件片段、相关度及依赖 |
+| `context_assembly.py`、`context_protocol.py`、`pinned_context.py` | 上下文组装、协议去重、常驻预算 |
+| `maintenance*.py`、`model.py`、`adapters.py` | 事件整理、模型预算与适配 |
+| `focus.py`、`message_identity.py`、`message_retention.py` | 关注筛选、身份与消息清理 |
+| `space_copy.py`、`transfer.py`、`migration_compensation.py`、`backup_validation.py` | 复制、文件迁移、缺失资料补偿与备份验证 |
+| `backend/memory_slice/integrations/` | Agent 历史同步等接入功能 |
+| `backend/memory_slice/web.py`、`backend/app/` | HTTP 适配与独立服务入口 |
+| `plugins/astrbot_plugin_memory_slice/` | AstrBot 生命周期、身份映射、消息采集与注入 |
+| `skills/memory-slice/`、`scripts/` | Skill 客户端、安装器、构建及发布工具 |
+| `frontend/src/` | React 控制台，独立服务与插件共用；图使用 G6 |
+
+`pip install .` 可只安装 Python 核心，不要求 FastAPI。HTTP 运行依赖见 `backend/requirements.txt`。核心默认导入不创建 Web 应用、不监听端口、不写入示例数据。
+
+宿主创建 `MemoryService(data_dir, model=adapter)`，加载时 `await start()`，卸载时 `await close()`。同一数据目录只允许一个活跃服务；保持数据库占用保护，不能以多个 worker 或多个宿主进程同时写入来扩容。后台任务需正确取消并等待退出。
+
+## 数据流
 
 ```text
-backend/memory_slice/       共享核心（默认导入不依赖 Web 框架）
-  service.py               MemoryService：应用操作、事务编排、整理调度和生命周期
-  adapters.py              ModelAdapter 协议、RemoteModelAdapter 默认实现
-  model.py                 兼容 Chat Completions 的远程调用及整理输出解析
-  store.py                 SQLite、全文索引、短连接事务
-  engine.py / retrieval.py  评分、淡忘、入口检索和关联展开
-  maintenance*.py          追加维护、预算、补读、分段与版本
-  focus.py                 关注筛选和临时消息清理
-  schemas.py / errors.py   入参约束及独立领域错误
-  monitoring.py            每实例指标和快照
-  web.py / web_middleware.py 可选 HTTP 适配，使用时需安装 server 依赖
-backend/app/               独立 HTTP 入口
-frontend/                  现有 React 管理界面
+宿主真实消息 → 幂等入库 → 后台整理 → 事件、片段、关联、版本
+                               ↓
+                         后台向量索引（可选）
+当前提问 → retrieve / recall HTTP → 结构化记忆
+                                   ↓
+               宿主实际上下文 → assemble_context → 记忆注入 → 宿主回复
 ```
 
-FastAPI 和未来插件都调用同一个 `MemoryService`。核心不创建 Web 应用、不监听端口、不依赖全局应用单例，默认也不导入示例数据；一个实例管理一个目录。请勿让两个活跃服务共享同一个数据库目录，调度锁仍为进程内锁。
+空间隔离记忆，会话组织原始消息；同一空间可有多个会话。事件与聊天分开，消息逐条保留消费进度，不能只靠时间游标判断是否整理过。整理候选受预算约束，不读取所有旧事件；事件写入和消息进度在同一事务提交。
 
-## 不启动服务器的调用例子
+## 检索与上下文分工
 
-安装核心：`pip install .`，无需安装 FastAPI；仓库开发也可以设置 `PYTHONPATH=backend`。独立 HTTP 服务继续使用原有 `backend/requirements.txt` 与启动命令。
+新接入调用 `await service.retrieve(sid, RecallInput(...))`，HTTP 对应 `/spaces/{sid}/recall`。返回按分数排序的 `items`，包含完整事件、版本、分数及可选片段。`limit` 默认取空间配置 `recall_default_limit=8`，范围 1–120，达不到激活门槛不补满。
+
+这个接口不接收 `current_context`，不做对话去重，也不限制注入字符数。宿主掌握真正送入模型的上下文，负责将其传给共享纯函数：
 
 ```python
-import asyncio
-from memory_slice.service import MemoryService
-from memory_slice.schemas import (
-    SpaceInput, ConversationInput, MessageInput, ContextInput, MaintenanceInput,
-)
+from memory_slice.schemas import RecallInput
+from memory_slice.context_assembly import assemble_context
 
-async def main():
-    memory = MemoryService("./my-memory-data")
-    await memory.start()
-    try:
-        space = memory.add_space(SpaceInput(name="我的记忆"))
-        sid = space["id"]
-        person = memory.persons(sid)[0]
-        conversation = memory.add_conversation(sid, ConversationInput(person_id=person["id"]))
-        memory.add_message(sid, conversation["id"], MessageInput(
-            role="user", content="昨天烤面包失败，叫它陨石一号。", client_id="message-1",
-        ))
-        job = memory.enqueue(sid, MaintenanceInput(conversation_id=conversation["id"]))
-        while memory.get_job(sid, job["id"])["status"] in ("queued", "running"):
-            await asyncio.sleep(.05)
-        result = await memory.recall(sid, ContextInput(query="陨石一号"))
-        print(result["context"])
-    finally:
-        await memory.close()
-
-asyncio.run(main())
+result = await service.retrieve(sid, RecallInput(query="上次烤面包失败", limit=8))
+assembled = assemble_context(result, service.config_for(sid), current_context)
 ```
 
-此例使用无模型原文归档；配置关注对象但没有整理模型时会暂缓。实际应用应保存并复用空间和会话 ID，不要每次启动重新创建。
+`current_context` 是当前请求中实际存在的文本块列表，不是永久聊天档案。组装执行版本/片段去重、依赖选择和条数/字符预算，不重新检索、不调用模型。AstrBot 使用此流程；常驻选择另由插件结合 `pinned_context.py` 处理。
 
-## 宿主提供模型
+`service.recall` / HTTP `/context` 保留兼容的一站式路径，前端实验室仍可使用。`/search` 是限量入口候选查询，不等价于完整关联召回。
 
-`MemoryService(data_dir, model=adapter)` 接受实现以下异步方法的对象：
+记忆格式使用 `<memory-slice>`，规则使用带版本的 `<memory-slice-rules>`；当前片段协议为 v2。相同事件以较新 revision 为准，同版不同片段可以补充；部分片段不能当作完整事件替换。规则块只在当前上下文缺少对应版本时补充。协议解析不是安全认证，宿主仍需把记忆标为参考资料。
 
-```python
-async def complete(self, settings, api_key, messages,
-                   json_mode=False, purpose="other", metrics=None,
-                   max_tokens=None) -> str:
-    ...
-```
+## 模型与向量
 
-返回模型文本，不返回 HTTP Response。整理、查询扩展、关联判断及模拟聊天都会使用注入对象，不会绕回默认远程模型。宿主应尊重预算、超时和取消，输出截断或明确上下文超限分别抛出 `OutputLimitError`、`ContextLimitError`，不得把部分输出作为完整整理结果提交。
+`ModelAdapter.complete(settings, api_key, messages, json_mode=False, purpose="other", metrics=None, max_tokens=None)` 返回模型文本。用于整理与模拟聊天；输出截断、上下文超限分别用 `OutputLimitError`、`ContextLimitError`，部分 JSON 不能入库。模型用量缺失时不编造统计。
 
-`settings` 仍使用现有模型配置，需将该空间设为 `mode="llm"` 并填写宿主模型标识。默认 `RemoteModelAdapter` 沿用现有密钥配置；未来插件可自行解析宿主模型，不需要单独填写远程地址或密钥。模型指标由适配器记录，缺少服务商 token 用量时不得编造。
+embedding 是独立连接，不经过宿主生成式模型适配器。模型签名由地址、模型名和维度组成；片段内容哈希检查新旧。事件文本按 1200 字符、1000 步长生成向量片段，每批最多 8 个，每轮间隔 5 秒。它与上下文输出片段（目标 1500、最大 3000 字符）是两种不同用途的分片，不能混淆。
 
-## 生命周期和错误
+向量保存在 SQLite，当前为精确余弦扫描，无独立向量数据库。更换模型补建，错误退回程序召回；索引失败不删除事件。状态与熔断由 `embedding.py` 管理，具体默认值以 `EmbeddingInput` 为准。
 
-- `start()` 在已有运行实例上幂等；恢复未完成整理并启动调度。
-- `close()` 取消并等待后台任务，处理中任务恢复为待运行；清除内存密钥。SQLite 连接由各操作的上下文管理器关闭。
-- 关闭后不能提交新任务，可显式 `start()` 重启。推荐每个宿主加载周期创建一个新实例。
-- 核心抛 `MemoryError`，保留 `status_code`、`detail` 及可选 `headers`；HTTP 层映射为原有响应。业务代码无需捕获 FastAPI 异常。
-- 核心日志使用 `memory_slice` logger，默认传播给宿主日志系统；错误详情继续排除原始模型输出和密钥。
+## 身份和迁移决策
 
-## 召回与向量生命周期
+人物注册使用内部 ID，平台与外部 UID 作为接入映射。召回比较 UID 时忽略平台，空间隔离仍含平台信息；这是兼容更换连接方式后历史记忆的产品取舍，不意味着所有身份操作都忽略平台。
 
-`MemoryService.embeddings` 管理独立远程连接、内存密钥、向量索引和熔断。`service.start()` 启动索引任务，`close()` 取消并等待任务退出。该路径不使用宿主生成式模型适配器。
+复制与导入使用新全局 ID，`origin_id` 追踪共同来源，保持两个空间可独立修改。按来源处理重复，不按显示名合并。补偿共用规则，不能为通过校验而丢弃历史原文；不确定资料进入 `migration_recovery`，保留原始记录。详见 [数据迁移与恢复](data-management.md)。
 
-默认 local；hybrid 同时使用程序候选与 embedding 候选，随后沿用人物/遗忘/关联展开逻辑。向量文本包含标题、派生锚点及正文片段。事件正文按 1200 字符、1000 字符步长分片，批量最多 8 段；内容哈希和服务/模型/维度签名决定有效性。编辑或归档后旧片段不参与查询。查询失败保留程序结果并记录安全原因，向量故障不影响事件持久化。
+## 已知问题与边界
 
-SQLite 中保存 `embedding_config`（无密钥）和 `embedding_vector`；旧版 embedding 表/记录保留但不复用。当前采用精确余弦扫描，尚未做大规模 ANN 或压力验证。向量只负责语义相似度，不保证跨主题的经历结构联想。
+- **尚未拆分 embedding 超时**：查询和每批索引共用 `timeout_seconds`（默认 1.5 秒），长片段批量索引可能持续超时。调大可缓解，但也放宽聊天等待上限。独立索引超时是待办，不能宣称已实现。
+- **AstrBot 诊断入口不足**：只读配置页隐藏了连接测试按钮；核心 Python 日志也不一定出现在宿主日志界面。索引状态提供 `last_error`；仍需改进测试入口和错误可见性。
+- 单实例 SQLite，精确向量扫描未验证大规模负载；服务令牌不是空间级租户授权。
+- 事件候选、语义判断、片段依赖识别均可能漏召回；默认回归用替身不能证明真实模型质量。
+- Skill 安装器以 macOS 验证为主，其他平台与真实宿主兼容性须单独验收。Codex 同步从启用时刻开始，不自动导入全部历史。
 
-旧保存的 llm/auto 默认值迁移为 local；显式 llm 请求拒绝。详情见 [接口](backend-api-design.md)。
-
-
-### 请求上下文与记忆去重
-
-核心 `/context` 输入新增可选 `current_context: string[]`，传入当前模型请求中实际存在的文本块（包括系统提示、历史、本轮输入和额外文本）。不传时保持原有召回行为；不要用永久会话历史代替实际请求。核心扫描全部文本检查完整记忆块，查询线索按近期字符预算选择，并排除协议记忆及规则块，不把全部上下文发送给 Embedding。
-
-事件输出使用 `<memory-slice id="event_123" revision="2" supersedes="1">完整正文</memory-slice>`；revision 复用事件存储版本，修改事件会递增。正文 XML 转义。同 ID 在当前上下文已有同版或更新版本时跳过，旧版则输出最新完整记录，去重原因位于 `omitted`。旧 `<event>` 格式不会误判为新版协议。
-
-规则使用 `<memory-slice-rules version="1">…</memory-slice-rules>`；有记忆输出且当前上下文缺少本版完整规则时附带。上下文裁剪后可再次注入，不维护会话永久已读状态。规则占用上下文字符预算。标签检测不是安全认证，接入方应传递真实请求内容。
-
-AstrBot 插件从 ProviderRequest 传递当前可见文本，仍使用临时注入，不修改历史；后续框架裁剪或其他插件修改不在此快照内。状态命令为 `/记忆切片`，召回仅支持 local/hybrid；hybrid 可能增加聊天延迟，失败自动降级。
+历史测试报告见 [历史目录](history/README.md)，不要用历史报告替代当前验证。
