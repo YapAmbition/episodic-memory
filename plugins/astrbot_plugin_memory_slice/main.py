@@ -20,7 +20,7 @@ from .memory_slice.diagnostic_log import DiagnosticLog
     "astrbot_plugin_memory_slice",
     "Memory Slice",
     "以事件为单位的记忆、联想与淡忘",
-    "0.3.18",
+    "0.3.19",
 )
 class MemorySlicePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
