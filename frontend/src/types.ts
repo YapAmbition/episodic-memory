@@ -136,7 +136,7 @@ export type Job = {
   parent_job_id?: string;
   continuation_job_id?: string;
   error?: string;
-  error_detail?: { stage: string; code: string; exception_type: string; status_code?: number; error_count?: number; issues?: {field: string; code: string; message: string}[] };
+  error_detail?: { diagnostic_id?: string; stage: string; code: string; exception_type: string; status_code?: number; error_count?: number; issues?: {field: string; code: string; message: string}[] };
   type?: "maintenance";
   total_count?: number;
   success_count?: number;

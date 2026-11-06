@@ -10,6 +10,7 @@ import uuid
 import time
 from datetime import datetime, timezone
 from .adapter import AstrBotModelAdapter
+from .memory_slice.diagnostic_log import DiagnosticLog
 from .pinned import PinnedMemories
 from .memory_slice.integrations.routing import ChatRouting
 from .memory_slice.service import MemoryService
@@ -37,7 +38,7 @@ def digest(*parts):
 
 
 class Runtime:
-    def __init__(self, context, config, directory):
+    def __init__(self, context, config, directory, diagnostics=None):
         self.config = dict(config)
         self.focus = str(config.get("focus_uid", "")).strip()
         self.platform = str(config.get("focus_platform", "")).strip()
@@ -90,7 +91,13 @@ class Runtime:
         )
         budget_for(self.model_settings, initial.model_dump())
         self.signature = digest(self.focus, self.platform)
-        self.core = MemoryService(directory, model=self.provider)
+        self.diagnostics = diagnostics or DiagnosticLog(directory, config.get("diagnostic_log_level", "INFO"))
+        try:
+            self.core = MemoryService(directory, model=self.provider, diagnostics=self.diagnostics)
+        except BaseException as exc:
+            self.diagnostics.emit("plugin_initialization_failed", "ERROR", exc=exc)
+            self.diagnostics.close()
+            raise
         self.pins = PinnedMemories(self)
         self.bindings = ChatRouting(self.core)
 
@@ -108,6 +115,7 @@ class Runtime:
         return self.config.get("private_enabled", True)
 
     async def start(self):
+        self.diagnostics.emit("plugin_started")
         await self.core.start()
         try:
             # Old focus targets remain on disk but never run under a new identity/config.
@@ -127,7 +135,11 @@ class Runtime:
 
     async def close(self):
         self.closed = True
-        await self.core.close()
+        try:
+            await self.core.close()
+        finally:
+            self.diagnostics.emit("plugin_stopped")
+            self.diagnostics.close()
 
     def scope(self, event):
         return {
@@ -419,6 +431,7 @@ class Runtime:
             # Cancellation is a BaseException and must continue to propagate.
             stage = event.get_extra('memory_slice_stage')
             degraded = stage
+            self.core.report("plugin_recall_degraded", "WARNING", exc=exc, stage=stage)
             self.core.metrics.plugin_failures.labels(stage, 'operation_failed').inc()
             frames = traceback.extract_tb(exc.__traceback__)
             location = ';'.join(f'{Path(f.filename).name}:{f.lineno}:{f.name}' for f in frames[-4:])
@@ -429,6 +442,7 @@ class Runtime:
             assembled = {'context': '', 'omitted': [], 'selected': []}
         combined = '\n\n'.join(part for part in (pinned_context, assembled['context']) if part)
         wire = PREFIX + "\n" + combined if combined else ""
+        self.core.report('plugin_injection', 'DEBUG', selected=len(assembled['selected']) + len(pinned['events']))
         codes = [x.get('code', 'duplicate') for x in assembled['omitted']]
         summary = dict(recall_id=result['id'], degraded=degraded, retrieved=retrieved_count,
                        deduplicated=len({x['event_id'] for x in assembled['omitted'] if x.get('code') is None}),

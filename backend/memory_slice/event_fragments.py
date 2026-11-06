@@ -27,3 +27,19 @@ def split_body(body, target=1500, maximum=3000):
             start = end
     return result
 
+
+
+def semantic_fragment_score(part, match):
+    """Combine overlapping hit ranges without double-counting their coverage."""
+    hits = [h for h in (match or {}).get("fragment_hits", [])
+            if h['end'] > part['start'] and h['start'] < part['end'] and h['end'] > h['start']]
+    if not hits or part['end'] <= part['start']:
+        return 0
+    boundaries = sorted({part['start'], part['end']} |
+                        {max(part['start'], h['start']) for h in hits} |
+                        {min(part['end'], h['end']) for h in hits})
+    weighted = sum((right-left) * max((h['score'] for h in hits
+                   if h['start'] <= left and h['end'] >= right), default=0)
+                   for left,right in zip(boundaries,boundaries[1:]))
+    span = min(part['end']-part['start'], max(h['end']-h['start'] for h in hits))
+    return min(max(h['score'] for h in hits), weighted / span)

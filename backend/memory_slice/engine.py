@@ -142,7 +142,7 @@ def build_context(events, person_id, query, at, config, mode="associative", sema
                 heapq.heappush(heap, (-propagated, target, depth + 1, path + [target], edge_relation))
     graph_at = time.perf_counter()
     if result_limit is not None:
-        from .event_fragments import split_body
+        from .event_fragments import split_body, semantic_fragment_score
         ranked = sorted(best.values(), key=lambda a: (-a['score'], a['event_id']))
         items = []
         for rank, activation in enumerate(ranked[:result_limit], 1):
@@ -158,7 +158,7 @@ def build_context(events, person_id, query, at, config, mode="associative", sema
                     dependencies.add(i - 1)
                 dependencies.discard(i)
                 p['dependencies'] = [parts[j]['id'] for j in sorted(dependencies)]
-                p['score'] = activation['score'] * (.25 + .75 * max([cosine(query, line) for line in p['text'].splitlines()] or [0]))
+                p['score'] = activation['score'] * (.25 + .75 * max(max([cosine(query, line) for line in p['text'].splitlines()] or [0]), semantic_fragment_score(p, semantic_matches.get(event['id']))))
             items.append(dict(activation, rank=rank, version=event.get('version', 1),
                               event=event_view(event, at, config), fragments=parts))
         return dict(id=new_id('recall'), at=iso(at), person_id=person_id, query=query, mode=mode,
@@ -171,7 +171,7 @@ def build_context(events, person_id, query, at, config, mode="associative", sema
                                     graph_expansion=round((graph_at-ranked_at)*1000, 3), context_build=0))
     from .recall_fragments import assemble
     selected, omitted, context = assemble(best.values(), all_events, candidates, at, config, query,
-                                         current_context, event_view, cosine)
+                                         current_context, event_view, cosine, semantic_matches=semantic_matches)
     return {"id": new_id("recall"), "at": iso(at), "person_id": person_id, "query": query,
             "strategy": "hybrid_embedding" if semantic_matches else "local_anchors", "mode": mode,
             "seeds": [s["event_id"] for s in seeds], "candidates": candidates, "selected": selected,

@@ -542,6 +542,11 @@ class PluginRuntimeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(job["status"], "failed", job)
         self.assertNotIn("secret-key", json.dumps(job))
+        logs = self.runtime.diagnostics.snapshot()["text"]
+        self.assertIn(job["error_detail"]["diagnostic_id"], logs)
+        self.assertIn("maintenance_failed", logs)
+        self.assertIn("maintenance_model_started", logs)
+        self.assertNotIn("secret-key", logs)
         self.assertFalse(
             self.runtime.core.messages(record["space_id"], record["conversation_id"])[
                 0

@@ -24,6 +24,7 @@ class Unavailable(Exception):
 class Embeddings:
     def __init__(self, store, metrics):
         self.store, self.metrics = store, metrics
+        self.report = lambda *args, **kwargs: None
         self.keys, self.states = {}, {}
         self.slots = None
         self.worker = None
@@ -98,6 +99,8 @@ class Embeddings:
                 yield {
                     "id": digest(event["id"] + ":" + str(start)),
                     "event_id": event["id"],
+                    "start": start,
+                    "end": min(len(body), start + 1200),
                     "hash": digest(text),
                     "text": text,
                 }
@@ -255,6 +258,7 @@ class Embeddings:
                     st["last_error"] != code
                     or st["failures"] == cfg["failure_threshold"]
                 ):
+                    self.report("embedding_failed", "WARNING", exc=exc, space_id=sid, purpose=purpose, code=code, failures=st["failures"])
                     logging.getLogger("memory_slice").warning(
                         "embedding_failed purpose=%s reason=%s failures=%s",
                         purpose,
@@ -296,7 +300,8 @@ class Embeddings:
                     sid, self.store.list("event", sid), self.settings(sid)
                 )[1]
             }
-            scores = {}
+            scores, fragment_hits = {}, {}
+            positions = {chunk["id"]: chunk for chunk in chunks}
             for row in rows:
                 if (
                     row["id"] not in fresh
@@ -315,9 +320,13 @@ class Embeddings:
                 )
                 if score >= cfg["min_similarity"]:
                     scores[row["event_id"]] = max(scores.get(row["event_id"], 0), score)
+                    chunk = positions[row["id"]]
+                    fragment_hits.setdefault(row["event_id"], []).append(
+                        {"start": chunk["start"], "end": chunk["end"], "score": score})
             return scores, {
                 "status": "partial" if len(rows) < len(chunks) else "ok",
                 "candidate_count": len(scores),
+                "fragment_hits": fragment_hits,
                 "elapsed_ms": round((time.monotonic() - started) * 1000, 3),
             }
         except asyncio.CancelledError:
@@ -370,8 +379,9 @@ class Embeddings:
                     await self.index_once(space["id"])
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    pass  # request records sanitized errors; never interrupts host
+                except Exception as exc:
+                    if not isinstance(exc, Unavailable):
+                        self.report("embedding_worker_failed", "ERROR", exc=exc, space_id=space["id"])
             await asyncio.sleep(5)
 
     def start(self):

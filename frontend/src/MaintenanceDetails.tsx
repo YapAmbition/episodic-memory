@@ -13,6 +13,7 @@ export function MaintenanceDetails({ job, onRetry }: { job: Job; onRetry?: (id: 
     {job.error_detail && <div className="maintenance-deferred">
       <p>任务 ID：<code>{job.id}</code></p>
       <p>失败阶段：{({prepare:"准备材料",model:"调用模型",parse:"解析 JSON",validate:"验证输出字段",supplement:"补读材料",apply:"验证引用与保存"} as Record<string,string>)[job.error_detail.stage] || job.error_detail.stage} · {job.error_detail.exception_type}{job.error_detail.status_code ? ` · HTTP ${job.error_detail.status_code}` : ""}</p>
+      {job.error_detail.diagnostic_id && <p>诊断编号：<code>{job.error_detail.diagnostic_id}</code>（运行监控 → 插件诊断日志）</p>}
       {job.error_detail.issues?.map((issue, i) => <p key={i}><code>{issue.field || "输出根节点"}</code>：{issue.message}（{issue.code}）</p>)}
       {(job.error_detail.error_count ?? 0) > 20 && <p>共 {job.error_detail.error_count} 项问题，仅展示前 20 项。</p>}
       <p>在后端日志中搜索此任务 ID，可找到对应错误记录。</p>

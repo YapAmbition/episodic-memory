@@ -93,3 +93,18 @@ export const localInput = (x: string) => {
     .toISOString()
     .slice(0, 16);
 };
+
+export async function downloadDiagnosticLogs() {
+  const token = serviceToken();
+  const r = await fetch("/api/v1/diagnostics/logs?download=true", {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!r.ok) {
+    if (r.status === 401) window.dispatchEvent(new Event("memory-slice-auth"));
+    throw new Error(`下载日志失败（HTTP ${r.status}）`);
+  }
+  const url = URL.createObjectURL(await r.blob());
+  const a = document.createElement("a");
+  a.href = url; a.download = "memory-slice-diagnostics.log"; a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

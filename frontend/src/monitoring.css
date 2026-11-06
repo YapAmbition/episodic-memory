@@ -1087,3 +1087,13 @@
 }
 
 .monitor-job-dot.deferred { background: #b78a58; }
+
+.diagnostic-log-heading, .diagnostic-log-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.diagnostic-log-heading { justify-content: space-between; }
+.diagnostic-log-heading h3 { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 16px; }
+.diagnostic-logs p { font-size: 12px; color: var(--muted, #7e8775); line-height: 1.7; }
+.diagnostic-log-actions button { display: inline-flex; align-items: center; gap: 6px; border: 1px solid #dce0d4; background: #fafbf7; color: #52634b; border-radius: 8px; padding: 8px 12px; font-size: 12px; cursor: pointer; }
+.diagnostic-log-actions button:disabled { opacity: .5; cursor: wait; }
+.diagnostic-logs summary { cursor: pointer; font-size: 13px; margin: 14px 0; }
+.diagnostic-logs pre { max-height: 320px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f5f6f0; border: 1px solid #e3e6db; border-radius: 10px; padding: 14px; font-size: 11px; line-height: 1.7; color: #47533f; }
+.diagnostic-logs [role="alert"] { color: #a15434; }

@@ -125,11 +125,17 @@ def create_app(
             ]})
         return await request_validation_exception_handler(request, exc)
 
+    @app.exception_handler(Exception)
+    async def unexpected_error(request, exc):
+        diagnostic_id = service.report("http_failed", "ERROR", exc=exc, stage="http")
+        return JSONResponse(status_code=500, content={"detail": "服务处理失败，请查看诊断日志" + (f"（诊断编号 {diagnostic_id}）" if diagnostic_id else "")})
+
     @app.exception_handler(HTTPException)
     async def domain_error(request, exc):
+        diagnostic_id = service.report("http_rejected", "WARNING", exc=exc, stage="http", status=exc.status_code)
         return JSONResponse(
             status_code=exc.status_code,
-            content={"detail": exc.detail},
+            content={"detail": exc.detail, **({"diagnostic_id": diagnostic_id} if diagnostic_id else {})},
             headers=exc.headers,
         )
 
@@ -279,6 +285,16 @@ def create_app(
         benchmark_tasks.add(task)
         task.add_done_callback(benchmark_tasks.discard)
         return job
+
+    @api.get("/diagnostics/logs", tags=["Monitoring"])
+    def diagnostic_logs(download: bool = False):
+        sink = service.diagnostics
+        if not sink:
+            return {"available": False, "text": ""}
+        result = sink.snapshot(download=download)
+        if download:
+            return Response(result["text"], media_type="text/plain", headers={"Content-Disposition": 'attachment; filename="memory-slice-diagnostics.log"'})
+        return result
 
     @api.get("/monitoring", tags=["Monitoring"])
     def monitoring_json():

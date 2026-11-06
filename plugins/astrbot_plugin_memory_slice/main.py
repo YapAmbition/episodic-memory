@@ -12,6 +12,7 @@ from astrbot.core.agent.message import TextPart
 from astrbot.core.utils.astrbot_path import get_astrbot_data_path
 from .runtime import Runtime, PREFIX
 from .web_server import WebServer
+from .memory_slice.diagnostic_log import DiagnosticLog
 
 
 
@@ -26,6 +27,7 @@ class MemorySlicePlugin(Star):
         super().__init__(context)
         self.config = config
         self.runtime = None
+        self.diagnostics = None
         self.data_lock = None
         self.web = None
         self.web_error = None
@@ -39,13 +41,18 @@ class MemorySlicePlugin(Star):
         directory.mkdir(parents=True, exist_ok=True)
         self.data_lock = FileLock(str(directory / "runtime.lock"))
         self.data_lock.acquire(timeout=0)
+        self.diagnostics = DiagnosticLog(directory, self.config.get("diagnostic_log_level", "INFO"))
         try:
-            self.runtime = Runtime(self.context, self.config, directory)
+            self.runtime = Runtime(self.context, self.config, directory, diagnostics=self.diagnostics)
             await self.runtime.start()
-        except BaseException:
-            if self.runtime:
-                await self.runtime.close()
-            self.data_lock.release()
+        except BaseException as exc:
+            self.diagnostics.emit("plugin_start_failed", "ERROR", exc=exc)
+            try:
+                if self.runtime:
+                    await self.runtime.close()
+            finally:
+                self.diagnostics.close()
+                self.data_lock.release()
             raise
 
         if self.config.get("web_enabled", False):
@@ -56,6 +63,7 @@ class MemorySlicePlugin(Star):
                     f"Memory Slice 管理页面已启动，端口 {self.config.get('web_port', 8765)}，需要访问令牌"
                 )
             except Exception as exc:
+                self.runtime.core.report("plugin_web_failed", "ERROR", exc=exc)
                 self.web_error = (
                     str(exc) if isinstance(exc, ValueError) else type(exc).__name__
                 )
@@ -70,6 +78,7 @@ class MemorySlicePlugin(Star):
         code = "invalid_input" if isinstance(exc, ValueError) else "timeout" if isinstance(exc, TimeoutError) else "operation_failed"
         diagnostic = uuid.uuid4().hex[:12]
         if self.runtime:
+            diagnostic = self.runtime.core.report("plugin_operation_failed", "ERROR", exc=exc, stage=stage, code=code) or diagnostic
             self.runtime.core.metrics.plugin_failures.labels(stage, code).inc()
         frames = traceback.extract_tb(exc.__traceback__)
         location = ";".join(f"{Path(f.filename).name}:{f.lineno}:{f.name}" for f in frames[-4:])
@@ -186,5 +195,7 @@ class MemorySlicePlugin(Star):
                 await self.runtime.close()
                 self.runtime = None
         finally:
+            if self.diagnostics:
+                self.diagnostics.close()
             if self.data_lock:
                 self.data_lock.release()

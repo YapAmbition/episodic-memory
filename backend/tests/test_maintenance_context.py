@@ -267,6 +267,63 @@ class MaintenanceTests(unittest.TestCase):
     def plan_for(self, messages, body=None, eid=None):
         return json.dumps({'events':[dict(id=eid, title='长对话的同一事情', body=body or ''.join(m['content'] for m in messages), source_ids=[m['id'] for m in messages], person_ids=[self.person])]}, ensure_ascii=False)
 
+    def test_87_similar_events_do_not_block_model_or_lose_history(self):
+        events = [self.create_event(title=f'烤面包记录{i}', body='陨石一号，记录经过。' * 40)
+                  for i in range(87)]
+        raw = self.post_message('陨石一号今天终于烤成功了').json()
+        self.config(maintenance_input_token_budget=5000, model_catalog_char_budget=8000)
+        calls = []
+        async def reply(settings, key, request, **kw):
+            data = json.loads(request[1]['content']); calls.append(data)
+            self.assertLessEqual(estimated_tokens(request), 5000)
+            return self.plan_for(data['new_messages'])
+        job = self.run_mock(reply)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(len(calls), 1, job)
+        self.assertTrue(self.app.state.store.get('message', raw['id'], self.space)['processed'])
+        self.assertLess(len(calls[0]['existing_events']), 87)
+        for event in events:
+            saved = self.app.state.store.get('event', event['id'], self.space)
+            self.assertEqual(saved['body'], event['body'])
+            self.assertEqual(saved['version'], event['version'])
+
+    def test_explicit_reference_precedes_fuzzy_candidates(self):
+        for i in range(42):
+            self.create_event(title=f'陨石一号{i}')
+        target = self.create_event(title='需要继续的记录', body='之前的经过', anchors={})
+        raw = self.post_message('陨石一号，继续[[' + target['id'] + ']]').json()
+        cfg = self.config(maintenance_input_token_budget=5000, model_catalog_char_budget=8000)
+        result = prepare(self.app.state.store, self.space, [raw], self.model(), cfg, NOW, '规则')
+        self.assertIn(target['id'], [e['id'] for e in result['existing']])
+        self.assertFalse(result['material_blocked'])
+        self.assertLessEqual(estimated_tokens(result['request']), 5000)
+
+    def test_explicit_followup_updates_target_without_replacing_old_body(self):
+        target = self.create_event(title='面包进展', body='此前烤焦了', anchors={})
+        for i in range(86):
+            self.create_event(title=f'陨石一号{i}')
+        raw = self.post_message('陨石一号，继续[[' + target['id'] + ']]：今天成功了').json()
+        self.config(maintenance_input_token_budget=5000, model_catalog_char_budget=8000)
+        async def reply(settings, key, request, **kw):
+            data = json.loads(request[1]['content'])
+            self.assertIn(target['id'], [e['id'] for e in data['existing_events']])
+            return self.plan_for(data['new_messages'], body='今天成功了', eid=target['id'])
+        job = self.run_mock(reply)
+        self.assertEqual(job['status'], 'completed', job)
+        saved = self.app.state.store.get('event', target['id'], self.space)
+        self.assertIn('此前烤焦了', saved['body'])
+        self.assertIn('今天成功了', saved['body'])
+        self.assertEqual(len(self.app.state.store.list('event', self.space)), 87)
+        self.assertTrue(self.app.state.store.get('message', raw['id'], self.space)['processed'])
+
+    def test_required_material_overflow_preserves_pending_message(self):
+        events = [self.create_event(title=f'旧记录{i}', anchors={}) for i in range(45)]
+        raw = self.post_message('继续' + ''.join('[[' + e['id'] + ']]' for e in events)).json()
+        cfg = self.config(maintenance_input_token_budget=5000, model_catalog_char_budget=8000)
+        result = prepare(self.app.state.store, self.space, [raw], self.model(), cfg, NOW, '规则')
+        self.assertTrue(result['material_blocked'])
+        self.assertFalse(self.app.state.store.get('message', raw['id'], self.space)['processed'])
+
     def test_budget_includes_prompt_persons_messages_and_old_event_material(self):
         self.create_event(body='很多细节。' * 500)
         raw = self.post_message('陨石一号的后续。' * 1500).json()
@@ -475,7 +532,7 @@ class MaintenanceTests(unittest.TestCase):
             return json.dumps({'read_requests':[{'event_id':old['id'],'start':0,'end':len(old['body'])}]})
         job=self.run_mock(reply)
         self.assertEqual(job['status'],'deferred',job)
-        self.assertEqual(job['model_call_count'],1)
+        self.assertEqual(job['model_call_count'],2)
         self.assertFalse(self.app.state.store.get('message',raw['id'],self.space)['processed'])
         self.assertEqual(self.client.get(self.prefix+'/events/'+old['id']).json()['body'],old['body'])
 
@@ -487,7 +544,7 @@ class MaintenanceTests(unittest.TestCase):
             return json.dumps({'read_requests':[{'event_id':old['id'],'start':0,'end':5}]})
         job=self.run_mock(reply)
         self.assertEqual(job['status'],'deferred',job)
-        self.assertEqual(job['model_call_count'],2)
+        self.assertEqual(job['model_call_count'],3)
 
     def test_metrics_keep_fixed_labels_and_separate_estimates_from_provider_tokens(self):
         raw=self.post_message('私密内容绝不进入指标标签').json()
@@ -573,3 +630,137 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(len(seen),2)
         self.assertLess(estimated_tokens(seen[1]),estimated_tokens(seen[0]))
         self.assertNotEqual(seen[0],seen[1])
+
+
+    def test_forced_partial_prefix_commits_and_continues_without_reprocessing(self):
+        self.config(maintenance_pending_token_limit=512)
+        originals = [self.post_message('这件事情已有独立的具体事实。' * 40).json() for _ in range(3)]
+        calls = []
+        async def reply(settings, key, request, **kw):
+            data = json.loads(request[1]['content'])
+            calls.append([m['id'] for m in data['new_messages']])
+            first = data['new_messages'][0]
+            result = json.loads(self.plan_for([first]))
+            result['processed_through_message_id'] = first['id']
+            return json.dumps(result)
+        self.model()
+        with patch('memory_slice.model.complete', reply):
+            self.client.post(self.prefix+'/maintenance', json={})
+            jobs = self.wait_drained()
+        self.assertFalse(any(j['status']=='failed' for j in jobs), jobs)
+        # Committed prefixes never reappear in subsequent batches.
+        for i, ids in enumerate(calls):
+            for previous in calls[:i]:
+                self.assertNotIn(previous[0], ids)
+        self.assertEqual(len(calls), 3)
+        self.assertFalse(any(r.get('blocked') for r in self.app.state.store.list('integration',self.space)))
+        for m in originals:
+            self.assertTrue(self.app.state.store.get('message',m['id'],self.space)['processed'])
+            self.assertEqual(self.app.state.store.get('message',m['id'],self.space)['content'],m['content'])
+
+    def test_unaffordable_read_creates_linked_continuation_preserving_old_event(self):
+        old = self.create_event(body='不能丢失的原始细节。'*2000)
+        raw = self.post_message('陨石一号今天终于成功了').json()
+        calls = []
+        async def reply(settings, key, request, **kw):
+            data = json.loads(request[1]['content']); calls.append(data)
+            if len(calls)==1:
+                return json.dumps({'read_requests':[{'event_id':old['id'],'start':0,'end':len(old['body'])}]})
+            self.assertIn('禁止更新', request[0]['content'])
+            result = json.loads(self.plan_for(data['new_messages'], body='今天终于成功了'))
+            result['events'][0]['links'] = [{'target_id':old['id'],'relation':'后续','strength':1}]
+            return json.dumps(result)
+        job = self.run_mock(reply)
+        self.assertEqual(job['status'],'completed',job)
+        self.assertEqual(len(calls),2)
+        saved = self.client.get(self.prefix+'/events/'+old['id']).json()
+        self.assertEqual(saved['body'],old['body']); self.assertEqual(saved['version'],old['version'])
+        self.assertTrue(self.app.state.store.get('message',raw['id'],self.space)['processed'])
+        new = self.client.get(self.prefix+'/events/'+job['event_ids'][0]).json()
+        self.assertEqual(new['links'][0]['target_id'],old['id'])
+
+    def test_continuation_fallback_cannot_modify_old_history(self):
+        old = self.create_event(body='完整历史必须保留。'*2000)
+        raw = self.post_message('陨石一号的新情况').json()
+        calls = []
+        async def reply(settings,key,request,**kw):
+            calls.append(1)
+            if len(calls)==1:
+                return json.dumps({'read_requests':[{'event_id':old['id'],'start':0,'end':len(old['body'])}]})
+            return self.plan_for(json.loads(request[1]['content'])['new_messages'],eid=old['id'])
+        job = self.run_mock(reply)
+        self.assertEqual(job['status'],'failed',job)
+        self.assertEqual(self.client.get(self.prefix+'/events/'+old['id']).json()['body'],old['body'])
+        self.assertFalse(self.app.state.store.get('message',raw['id'],self.space)['processed'])
+        self.assertTrue(any(r.get('blocked') for r in self.app.state.store.list('integration',self.space)))
+
+    def test_partial_chain_failure_retry_keeps_committed_prefix_exactly_once(self):
+        self.config(maintenance_pending_token_limit=512)
+        originals = [self.post_message(('第%d件独立经历。' % i)*60).json() for i in range(3)]
+        old = self.create_event(body='原有历史不能改变')
+        calls = []
+        async def reply(settings,key,request,**kw):
+            messages = json.loads(request[1]['content'])['new_messages']
+            calls.append([m['id'] for m in messages])
+            if len(calls)==2:
+                raise RuntimeError('simulated network failure')
+            result = json.loads(self.plan_for(messages[:1]))
+            result['processed_through_message_id'] = messages[0]['id']
+            return json.dumps(result)
+        self.model()
+        with patch('memory_slice.model.complete',reply):
+            self.client.post(self.prefix+'/maintenance',json={})
+            for _ in range(200):
+                jobs = self.client.get(self.prefix+'/jobs').json()
+                if any(j['status']=='failed' for j in jobs): break
+                time.sleep(.01)
+            failed = next(j for j in jobs if j['status']=='failed')
+            self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],2)
+            self.assertTrue(self.app.state.store.get('integration','maintenance-safety',self.space)['blocked'])
+            self.client.post(self.prefix+'/jobs/'+failed['id']+'/retry')
+            self.wait_drained()
+        self.assertNotIn(originals[0]['id'], [mid for batch in calls[1:] for mid in batch])
+        events = self.client.get(self.prefix+'/events').json()
+        for m in originals:
+            self.assertEqual(sum(m['id'] in e['source_ids'] for e in events),1)
+            saved = self.app.state.store.get('message',m['id'],self.space)
+            self.assertEqual(saved['content'],m['content'])
+            self.assertEqual(saved['maintenance_offset'],len(m['content']))
+        self.assertEqual(self.client.get(self.prefix+'/events/'+old['id']).json()['version'],old['version'])
+
+    def test_failure_mid_progress_write_rolls_back_event_and_all_offsets(self):
+        old = self.create_event(body='不可丢失的历史正文')
+        originals = [self.post_message('陨石一号第%d条新消息' % i).json() for i in range(2)]
+        store = self.app.state.store
+        actual_put = store.put
+        before_fragments = store.list("fragment",self.space)
+        def broken_put(kind, value, *args, **kwargs):
+            if kind=='message' and value['id']==originals[1]['id'] and value.get('processed'):
+                raise RuntimeError('simulated disk write failure')
+            return actual_put(kind,value,*args,**kwargs)
+        async def reply(settings,key,request,**kw):
+            return self.plan_for(json.loads(request[1]['content'])['new_messages'],body='新进展',eid=old['id'])
+        with patch.object(store,'put',broken_put):
+            job = self.run_mock(reply)
+        self.assertEqual(job['status'],'failed',job)
+        saved = self.client.get(self.prefix+'/events/'+old['id']).json()
+        self.assertEqual(saved['body'],old['body']); self.assertEqual(saved['version'],old['version'])
+        self.assertEqual(store.list('fragment',self.space),before_fragments)
+        for m in originals:
+            saved = store.get('message',m['id'],self.space)
+            self.assertFalse(saved['processed']); self.assertEqual(saved.get('maintenance_offset',0),0)
+            self.assertEqual(saved['content'],m['content'])
+
+    def test_fallback_truncation_stops_without_reentering_normal_updates(self):
+        old = self.create_event(body='必须完整保留的历史。'*2000)
+        raw = self.post_message('陨石一号的新进展').json()
+        calls = []
+        async def reply(*args,**kw):
+            calls.append(1)
+            if len(calls)==1:
+                return json.dumps({'read_requests':[{'event_id':old['id'],'start':0,'end':len(old['body'])}]})
+            raise OutputLimitError()
+        job = self.run_mock(reply)
+        self.assertEqual(job['status'],'failed',job); self.assertEqual(len(calls),2)
+        self.assertFalse(self.app.state.store.get('message',raw['id'],self.space)['processed'])
+        self.assertEqual(self.client.get(self.prefix+'/events/'+old['id']).json()['body'],old['body'])

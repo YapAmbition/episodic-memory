@@ -54,5 +54,6 @@ class PinnedMemories:
             if code not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
                 raise
             self.runtime.core.metrics.plugin_failures.labels('pinned_save', 'database_busy').inc()
+            self.runtime.core.report('pinned_save_failed', 'WARNING', exc=exc, space_id=sid, code='database_busy')
             logging.getLogger(__name__).warning("Memory Slice pinned_save code=database_busy timeout_ms=1000; previous selection retained")
             raise MemoryError(503, '暂时没保存成功，原设置仍然生效。你的选择已保留，可以稍后重试。') from exc

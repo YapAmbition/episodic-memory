@@ -290,8 +290,46 @@ class EmbeddingTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await self.recall("local"))["effective_mode"], "local")
 
 
-import test_memory as fixtures
 
+    async def test_semantic_hit_reaches_injected_fragment_with_old_index(self):
+        from memory_slice.schemas import RecallInput
+        from memory_slice.context_assembly import assemble_context
+        body = ''.join('\n## 段落%d\n' % i + '当天记录了很多普通经过。'*25 + ('找到遗失物就在衣服胸前。' if i==2 else '') + '当天记录了很多普通经过。'*50 for i in range(8))
+        event = self.core.create_event(self.sid, EventInput(title='一次生活插曲',body=body,salience=.9))
+        query = '搜寻许久才察觉随身佩戴'
+        def semantic_provider(request):
+            inputs = json.loads(request.content)['input']
+            return httpx.Response(200,json={'data':[{'index':i,'embedding':[1.,0.] if text==query or '找到遗失物就在衣服胸前。' in text else [0.,1.]} for i,text in enumerate(inputs)]})
+        self.manager.transport = httpx.MockTransport(semantic_provider)
+        for _ in range(4): await self.manager.index_once(self.sid)
+        before = self.core.store.get('event',event['id'],self.sid)
+        vectors_before = self.core.store.list('embedding_vector',self.sid)
+        # Historical rows require no stored offsets: recover ranges from current chunk generation.
+        self.assertTrue(vectors_before)
+        config = dict(self.core.config_for(self.sid),context_char_budget=3500)
+        original_query = self.manager.query
+        async def without_ranges(*args,**kwargs):
+            scores,status = await original_query(*args,**kwargs)
+            return scores,{k:v for k,v in status.items() if k!='fragment_hits'}
+        with patch.object(self.manager,'query',side_effect=without_ranges):
+            old_result = await self.core.retrieve(self.sid,RecallInput(query=query,retrieval_mode='hybrid'))
+        old_context = assemble_context(old_result,config)['context']
+        result = await self.core.retrieve(self.sid,RecallInput(query=query,retrieval_mode='hybrid'))
+        assembled = assemble_context(result,config)
+        self.assertNotIn('找到遗失物就在衣服胸前。',old_context)
+        self.assertIn('找到遗失物就在衣服胸前。',assembled['context'])
+        self.assertLessEqual(len(assembled['context']),3500)
+        again = assemble_context(result,config,[assembled['context']])
+        self.assertNotIn('找到遗失物就在衣服胸前。',again['context'])
+        # Compatibility endpoint uses the same semantic evidence.
+        with patch.object(self.core,'config_for',return_value=config):
+            legacy = await self.core.recall(self.sid,ContextInput(query=query,retrieval_mode='hybrid'))
+        self.assertIn('找到遗失物就在衣服胸前。',legacy['context'])
+        self.assertEqual(self.core.store.get('event',event['id'],self.sid),before)
+        self.assertEqual(self.core.store.list('embedding_vector',self.sid),vectors_before)
+
+
+import test_memory as fixtures
 
 class EmbeddingAPITests(unittest.TestCase):
     setUp = fixtures.APITests.setUp

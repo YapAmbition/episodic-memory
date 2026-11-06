@@ -4,10 +4,10 @@ import re
 from .context_protocol import RULES, inspect_context, inspect_fragments, memory_block
 
 
-from .event_fragments import split_body
+from .event_fragments import split_body, semantic_fragment_score
 
 
-def assemble(activations, all_events, candidates, at, config, query, current_context, view, similarity, prepared=None):
+def assemble(activations, all_events, candidates, at, config, query, current_context, view, similarity, prepared=None, semantic_matches=None):
     existing, has_rules = inspect_context(current_context or [])
     seen, prior = inspect_fragments(current_context or [])
     plans, omitted = [], []
@@ -38,7 +38,8 @@ def assemble(activations, all_events, candidates, at, config, query, current_con
                 required = set(part['dependencies']) | {part['id']}
                 dependencies = {j for j, p in enumerate(parts) if p['id'] in required}
             dependencies = {j for j in dependencies if parts[j]['id'] not in known}
-            score = max([similarity(query, line) for line in part['text'].splitlines()] or [0])
+            score = max(max([similarity(query, line) for line in part['text'].splitlines()] or [0]),
+                        semantic_fragment_score(part, (semantic_matches or {}).get(eid)))
             units.append(dict(index=i, dependencies=dependencies, score=part['score'] if prepared is not None else activation['score'] * (.25 + .75 * score)))
         if not units:
             omitted.append(dict(event_id=eid, title=event['title'], reason='当前上下文已有本版全部片段'))

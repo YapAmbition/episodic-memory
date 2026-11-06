@@ -46,6 +46,21 @@ class WebTests(unittest.IsolatedAsyncioTestCase):
         await self.runtime.close()
         self.tmp.cleanup()
 
+    async def test_diagnostic_log_auth_download_and_isolation(self):
+        self.runtime.core.report("test_diagnostic", "ERROR", exc=ValueError("SECRET_CHAT_KEY"), job_id="job_diagnostic")
+        response = await self.client.get("/api/v1/diagnostics/logs")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["available"])
+        self.assertIn("job_diagnostic", response.json()["text"])
+        self.assertNotIn("SECRET_CHAT_KEY", response.text)
+        for suffix in ("", "?download=true"):
+            denied = await self.client.get("/api/v1/diagnostics/logs" + suffix, headers={"Authorization": "Bearer invalid"})
+            self.assertEqual(denied.status_code, 401)
+        download = await self.client.get("/api/v1/diagnostics/logs?download=true")
+        self.assertIn("attachment", download.headers["content-disposition"])
+        self.assertIn("job_diagnostic", download.text)
+        self.assertNotIn("SECRET_CHAT_KEY", download.text)
+
     async def test_console_context_includes_old_platform_person(self):
         from astrbot_plugin_memory_slice.memory_slice.schemas import PersonInput
         core = self.runtime.core

@@ -13,12 +13,13 @@ from .store import dt
 
 PROTOCOL = """
 输出 processed_through_message_id：本次连续处理前缀的最后消息 ID；全部暂缓则为 null，并给 waiting_reason。前缀内每条消息必须用于事件、强化或 ignored_messages，不能有空洞。尾部允许等待补充，不要把未得到回答本身记录成事情。事情不必结束，但记忆应能独立理解。
-force_progress=true 时必须处理本批全部 new_messages：有事实就记阶段性进展，无可理解信息则明确忽略并说明理由，不得虚构结局。previous_dialogue 只读，不能作为本轮来源。
+force_progress=true 时必须推进非空的连续消息前缀；输出预算不足时允许剩余消息留到下一批：有事实就记阶段性进展，无可理解信息则明确忽略并说明理由，不得虚构结局。previous_dialogue 只读，不能作为本轮来源。
 frozen=true 的事件已冻结，仅可作为只读背景：不得追加、改写、合并或拆分。后续进展或更正应新建事件，以 links 关联原事件，不得因为冻结而忽略新事实。
 后端使用追加协议：已有事件 body 只写新增内容或更正，不得重写旧正文。
 fragment 是本条原始消息的字符范围，后续片段可能尚未提供。source_ids 使用原消息 ID。
 existing_events 仅为有预算限制的候选，不是全库。retrieval 描述可想起程度，不表示事实可信度。
 segments 标注旧正文原文的位置。body_complete=false 时不得根据片段拆分事件。
+旧事太长且新消息足以独立记录后续时，优先新建事件并用 links 关联旧事，不要求读完旧正文，不复制旧正文。
 需要补读可返回 read_requests:[{event_id,start,end}]（Python 字符位置，最多4项）。本轮只请求材料，不同时执行修改。
 无法有据判断归属或材料不足时返回 deferred_messages:[{message_id,reason}]，不要为覆盖消息而编造事件。
 问候等无事件信息可 ignored_messages；强制推进时无法独立理解的内容也可明确忽略，原文保留；配置关注对象时，与其无关的事情也应忽略。暂缓消息不得同时忽略或用于修改。
@@ -69,14 +70,15 @@ def rank_events(store, sid, meta, messages, at, config):
         cue, matches = local_cues(dict(event, body=""), query, at, config)
         if route_map.get(event["id"], set()) & {"full_text", "anchors"}:
             cue = max(cue, .25)
-        strong = bool(set(event.get("source_ids", [])).intersection(m["id"] for m in messages)) or "[[" + event["id"] + "]]" in query or any(
+        required = bool(set(event.get("source_ids", [])).intersection(m["id"] for m in messages)) or "[[" + event["id"] + "]]" in query
+        strong = required or any(
             match["kind"] == "details" and len(match["text"]) >= 4 for match in matches)
         base = (.75 * cue + .25 * bool((persons - {config["focus_person_id"]}).intersection(event["person_ids"]))) if config.get("focus_person_id") else cue
         score = base * (1 - weight + weight * strength)
         if strong:
             score = max(score, .85 + .1 * cue)
         info = {"strength": strength, "cue": round(cue, 6), "score": round(score, 6),
-                "revived": bool(strong and strength < .2), "strong_cue": strong,
+                "revived": bool(strong and strength < .2), "strong_cue": strong, "required": required,
                 "age_days": state["age_days"]}
         if score < .1:
             if base >= .1:
@@ -85,7 +87,7 @@ def rank_events(store, sid, meta, messages, at, config):
                 unrelated += 1
             continue
         ranked.append((event["id"], info))
-    ranked.sort(key=lambda pair: (-pair[1]["score"], pair[0]))
+    ranked.sort(key=lambda pair: (not pair[1]["required"], -pair[1]["score"], pair[0]))
     return ranked, {"faded": faded, "unrelated": unrelated}
 
 
@@ -173,6 +175,12 @@ def prepare(store, sid, originals, settings, config, at, prompt, limit=None, mes
         # Prefer whole, adjacent messages; split only a single message that cannot fit on its own.
         if chosen:
             break
+        # Old-event reservation is advisory. A whole new message that fits the
+        # actual budget must not fail merely because 30% was reserved for history.
+        chosen[:] = [view(end_limit)]
+        if len(message["content"]) <= 2000 and estimated_tokens(request()) <= limit:
+            break
+        chosen.clear()
         low, high, best = start + 1, end_limit, None
         while low <= high:
             mid = (low + high) // 2
@@ -206,25 +214,43 @@ def prepare(store, sid, originals, settings, config, at, prompt, limit=None, mes
     events = store.get_events(sid, [eid for eid, _ in candidates])
     by_id = {e["id"]: e for e in events}
     query = "\n".join(m["content"] for m in chosen)
-    omitted, used_chars, visible = [], 0, []
+    # Reserve compact identities for explicit/source references before spending
+    # the budget on rich excerpts. Similar detail anchors are candidates, not
+    # mandatory dependencies: omitting one must not block the entire batch.
+    admitted_items = {}
+    def admit(eid, item):
+        before = admitted_items.get(eid)
+        admitted_items[eid] = item
+        data["existing_events"] = list(admitted_items.values())
+        size = sum(len(serialize(value)) for value in admitted_items.values())
+        if size <= config["model_catalog_char_budget"] and estimated_tokens(request()) <= limit:
+            return True
+        if before is None:
+            del admitted_items[eid]
+        else:
+            admitted_items[eid] = before
+        data["existing_events"] = list(admitted_items.values())
+        return False
+
     for eid, info in candidates:
-        admitted = None
+        if info["required"]:
+            event = by_id[eid]
+            admit(eid, {"id": eid, "title": event["title"], "status": event["status"],
+                        "frozen": bool(event.get("frozen")), "body_chars": len(event["body"]),
+                        "body_complete": not event["body"], "segments": [], "retrieval": info})
+    for eid, info in candidates:
         for excerpt_chars in (1200, 350, 0):
             item = material(by_id[eid], info, query, excerpt_chars)
             if excerpt_chars == 0:
                 item = {key: item[key] for key in ("id", "title", "status", "frozen", "body_chars", "body_complete", "segments", "retrieval", "anchors")}
                 item["anchors"] = {kind: sorted(values, key=lambda value: value.lower() in query.lower(), reverse=True)[:3] for kind, values in item["anchors"].items()}
-            data["existing_events"].append(item)
-            size = len(serialize(item))
-            if used_chars + size <= config["model_catalog_char_budget"] and estimated_tokens(request()) <= limit:
-                admitted = item
-                used_chars += size
+            if admit(eid, item):
                 break
-            data["existing_events"].pop()
-        if admitted:
-            visible.append(by_id[eid])
-        else:
-            omitted.append(eid)
+    # Keep prompt order consistent with relevance order after reservations.
+    data["existing_events"] = [admitted_items[eid] for eid, _ in candidates if eid in admitted_items]
+    visible = [by_id[eid] for eid, _ in candidates if eid in admitted_items]
+    omitted = [eid for eid, _ in candidates if eid not in admitted_items]
+    required_omitted = [eid for eid, info in ranked if info["required"] and eid not in admitted_items]
     minimum_message = dict(chosen[0], content=chosen[0]["content"][:1],
                            fragment={**chosen[0]["fragment"], "end": chosen[0]["fragment"]["start"] + 1})
     minimum_data = {**data, "existing_events": [], "new_messages": [minimum_message]}
@@ -241,7 +267,8 @@ def prepare(store, sid, originals, settings, config, at, prompt, limit=None, mes
     budget["revived_count"] = sum(item["retrieval"]["revived"] for item in data["existing_events"])
     return {"messages": chosen, "existing": visible, "data": data, "request": request(), "budget": budget,
             "catalog_omitted_ids": omitted,
-            "material_blocked": any(info["strong_cue"] and eid in omitted for eid, info in candidates),
+            "material_blocked": bool(required_omitted),
+            "required_omitted_ids": required_omitted,
             "candidates": [{"event_id": eid, "title": by_id[eid]["title"], **info, "included": eid in {e["id"] for e in visible}} for eid, info in candidates]}
 
 
@@ -269,4 +296,23 @@ def supplement(prepared, reads, config):
     if estimated_tokens(request) > prepared["budget"]["input_limit"] or size > config["model_catalog_char_budget"]:
         return None
     return {**prepared, "data": data, "request": request,
+            "budget": {**prepared["budget"], "estimated_input_tokens": estimated_tokens(request)}}
+
+
+def continuation_fallback(prepared):
+    """One bounded, read-only-background pass; never rewrite an unseen history."""
+    data = copy.deepcopy(prepared["data"])
+    data["existing_events"] = [
+        {k: item[k] for k in ("id", "title", "status", "frozen", "body_chars")}
+        for item in data["existing_events"]
+    ]
+    instruction = ("\n本轮补读不可用，禁止再请求 read_requests。existing_events 只有身份信息，原文未提供。"
+                   "禁止更新、合并、拆分或强化旧事件。只可根据 new_messages 新建独立可理解的事件，"
+                   "明确属于旧事后续时用 links 关联旧事；无法确认关联不要编造。"
+                   "没有足够事实则暂缓，不能因为补读失败而忽略消息。")
+    request = [{**prepared["request"][0], "content": prepared["request"][0]["content"] + instruction},
+               {"role": "user", "content": serialize(data)}]
+    if estimated_tokens(request) > prepared["budget"]["input_limit"]:
+        return None
+    return {**prepared, "data": data, "request": request, "continuation_only": True,
             "budget": {**prepared["budget"], "estimated_input_tokens": estimated_tokens(request)}}

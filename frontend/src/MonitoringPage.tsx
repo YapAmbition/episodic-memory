@@ -42,6 +42,7 @@ import {
 } from "./monitoringMetrics";
 import type { Observation } from "./monitoringMetrics";
 import "./monitoring.css";
+import { DiagnosticLogs } from "./DiagnosticLogs";
 import { MaintenanceMonitoring } from "./MaintenanceMonitoring";
 import { RetrievalMonitoring } from "./RetrievalMonitoring";
 
@@ -750,6 +751,7 @@ export function MonitoringPage({
 
           <RetrievalMonitoring snapshot={snapshot} />
           <MaintenanceMonitoring snapshot={snapshot} />
+          <DiagnosticLogs />
           <section className="panel monitor-panel monitor-models">
             <PanelTitle
               icon={Sparkles}
