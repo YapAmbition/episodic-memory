@@ -16,7 +16,7 @@ from .diagnostics import job_diagnostic
 from .focus import select_messages, focus_prompt, validate_focus, cleanup_buffer, recall_person_keys, matches_focus
 from .conversation import ordered_messages
 from .engine import build_context, retrieve_events, event_view, strength_curve
-from .model import parse_json, ContextLimitError, OutputLimitError
+from .model import parse_json, ContextLimitError, OutputLimitError, ModelTimeoutError
 from .message_retention import cleanup_messages, content_hash, STATE_ID as RETENTION_STATE_ID
 from .maintenance_boundary import fingerprint, validate_boundary
 from .maintenance_context import prepare as prepare_maintenance, supplement as supplement_maintenance, budget_for, continuation_fallback
@@ -101,9 +101,8 @@ class MemoryService:
                     job.update(status="failed", error="此任务类型已停用", finished_at=iso())
                     self.store.put("job", job, job["space_id"])
                     continue
-                job.update(status="deferred", error="服务曾中断，进度已保留；为避免重复消耗，请手动继续", finished_at=iso())
+                job.update(status="deferred", error="服务曾中断，进度已保留", finished_at=iso())
                 self.store.put("job", job, job["space_id"])
-                self.pause_maintenance(job["space_id"], job["error"])
             self.scheduler_task = asyncio.create_task(self.scheduler())
             self.embeddings.start()
         except BaseException:
@@ -379,9 +378,6 @@ class MemoryService:
             self.metrics.recall_mode_seconds.labels(measured_mode).observe(time.perf_counter() - started)
 
 
-    def pause_maintenance(self, sid, reason):
-        self.store.put("integration", {"id": "maintenance-safety", "blocked": True, "reason": reason}, sid)
-
     def ready_maintenance_messages(self, sid, cid, config):
         conversations = [self.store.get("conversation", cid, sid)] if cid else self.store.list("conversation", sid)
         states = {r["id"]: r for r in self.store.list("integration", sid)}
@@ -410,9 +406,10 @@ class MemoryService:
                 root_id = job.get("root_job_id", job_id)
                 runs = {r["id"]: r for r in self.store.list("integration", sid)}
                 run_id = "maintenance-run:" + root_id
-                run = runs.get(run_id, {"id": run_id, "calls": 0, "batches": 0})
+                run = runs.get(run_id, {"id": run_id, "calls": 0, "batches": 0,
+                                            "timeout_batch_size": job.get("timeout_batch_size")})
                 if run["batches"] >= 8:
-                    raise HTTPException(422, "本轮已达 8 批整理上限，自动整理已暂停；请手动继续剩余消息")
+                    raise HTTPException(422, "本轮已达 8 批整理上限，本轮整理已结束")
                 run["batches"] += 1
                 self.store.put("integration", run, sid)
                 if body.conversation_id:
@@ -452,13 +449,14 @@ class MemoryService:
                     message_char_limit = None  # Never inherit a tiny output-retry character slice.
                     adaptations, reads = 0, 0
                     prompt = (config["maintenance_prompt"] or DEFAULT_MAINTENANCE_PROMPT) + focus_prompt(config)
-                    focus_correction = ""
+                    plan_correction = ""
                     job.update(model_call_count=0, adaptation_count=0, read_rounds=0, attempts=[])
                     while True:
                         stage = "prepare"
                         preparation_started = time.perf_counter()
                         prepared = prepare_maintenance(self.store, sid, originals, settings, config, dt(body.at or utcnow()),
-                                                       prompt + focus_correction, limit, message_char_limit)
+                                                       prompt + plan_correction, limit, message_char_limit,
+                                                       max_messages=run.get("timeout_batch_size"))
                         self.metrics.maintenance_stage.labels("prepare").observe(time.perf_counter() - preparation_started)
                         retry = False
                         while True:
@@ -474,7 +472,7 @@ class MemoryService:
                                     {"message_id": m["id"], "reason": "明确指向的旧事材料无法放入预算，暂缓处理；请调整容量或预算"} for m in messages]})
                                 break
                             if run["calls"] >= 8:
-                                raise HTTPException(422, "本轮已达 8 次模型调用上限（含重试和补读），自动整理已暂停；请手动继续")
+                                raise HTTPException(422, "本轮已达 8 次模型调用上限（含重试和补读），本轮整理已结束")
                             run["calls"] += 1
                             self.store.put("integration", run, sid)
                             job.update(run_model_call_count=run["calls"], run_call_limit=8)
@@ -491,6 +489,10 @@ class MemoryService:
                                 output = await self.model.complete(dict(settings, max_retries=0), key, prepared["request"], json_mode=True,
                                                         purpose="maintenance", metrics=self.metrics,
                                                         max_tokens=prepared["budget"]["output_reserved"])
+                            except ModelTimeoutError:
+                                attempt["outcome"] = "model_timeout"
+                                job["next_batch_size"] = max(1, len(messages) // 2)
+                                raise
                             except (ContextLimitError, OutputLimitError) as exc:
                                 reason = "context_limit" if isinstance(exc, ContextLimitError) else "output_limit"
                                 self.report("maintenance_model_limit", "WARNING", exc=exc, job_id=job_id, code=reason)
@@ -523,9 +525,22 @@ class MemoryService:
                                 self.report("maintenance_model_finished", job_id=job_id, elapsed_ms=attempt["elapsed_ms"])
                             attempt["outcome"] = "invalid_output"
                             stage = "parse"
-                            parsed = parse_json(output)
-                            stage = "validate"
-                            plan = MaintenancePlan.model_validate(parsed)
+                            try:
+                                parsed = parse_json(output)
+                                stage = "validate"
+                                plan = MaintenancePlan.model_validate(parsed, context={
+                                    "existing_events": {e["id"]: e for e in existing},
+                                })
+                            except (ValidationError, HTTPException) as exc:
+                                if plan_correction or run["calls"] >= 8 or prepared.get("continuation_only"):
+                                    raise
+                                feedback = "输出必须是完整的 JSON 对象"
+                                if isinstance(exc, ValidationError):
+                                    issues = job_diagnostic(exc, stage)["issues"]
+                                    feedback = "；".join(f"{i['field']} {i['message']}" for i in issues[:5])
+                                plan_correction = f"\n上次输出需要修正：{feedback}。请根据本次材料重新给出完整计划。"
+                                retry = True
+                                break
                             attempt["outcome"] = "success"
                             if not plan.read_requests:
                                 break
@@ -554,14 +569,14 @@ class MemoryService:
                         stage = "apply"
                         if prepared.get("continuation_only") and (any(e.id for e in plan.events) or plan.merges or plan.splits or plan.reinforcements or plan.ignored_messages):
                             raise HTTPException(502, "关联续篇模式禁止修改旧事件或忽略消息，原文与进度保留")
-                        can_correct_focus = not focus_correction and run["calls"] < 8 and not prepared.get("continuation_only")
+                        can_correct_focus = not plan_correction and run["calls"] < 8 and not prepared.get("continuation_only")
                         try:
                             validate_focus(plan, messages, config, skip_invalid=not can_correct_focus)
                         except FocusEvidenceError as exc:
                             attempt["outcome"] = exc.diagnostic_code
                             if not can_correct_focus:
                                 raise
-                            focus_correction = (
+                            plan_correction = (
                                 f"\n上次整理未通过关注证据校验：{exc.detail}。请依据本次材料重新输出完整计划。"
                                 "逐件核对关注人物 ID、来源消息 ID 和逐字引文；关系不确定时暂缓。"
                             )
@@ -616,7 +631,7 @@ class MemoryService:
                 for entry, eid in assigned:
                     if entry.id and entry.id not in known:
                         raise HTTPException(502, "模型引用了目录之外的待更新事件，未写入")
-                    if not set(entry.source_ids) & message_ids:
+                    if not set(entry.source_ids) <= message_ids:
                         raise HTTPException(502, "整理结果缺少本轮消息依据，未写入")
                     covered.update(set(entry.source_ids) & message_ids)
                 operation_ids = []
@@ -744,14 +759,13 @@ class MemoryService:
                 self.metrics.reinforcements.labels("maintenance").inc(reinforcement_count)
                 remaining = self.ready_maintenance_messages(sid, body.conversation_id, config)
                 if remaining and (covered != message_ids or deferred_ids) and not job.get("waiting_for_context") and not job.get("progress_continuation"):
-                    job.update(status="deferred", error="本批有未解决的消息，自动整理已暂停；进度已保存，请手动继续")
+                    job.update(status="deferred", error="本批有未解决的消息，本轮整理已结束；进度已保存")
                     self.store.put("job", job, sid)
                 if remaining and (job.get("waiting_for_context") or job.get("progress_continuation") or (covered == message_ids and not deferred_ids)):
                     try:
                         if run["calls"] >= 8 or run["batches"] >= 8:
-                            job.update(status="deferred", error="本轮调用或批次数已达安全上限，进度已保存；自动整理已暂停，请手动继续")
+                            job.update(status="deferred", error="本轮调用或批次数已达安全上限，进度已保存；本轮整理已结束")
                             self.store.put("job", job, sid)
-                            self.pause_maintenance(sid, job["error"])
                             return
                         # Recover input capacity gradually; output retries never constrain future batches.
                         recovered = min(config["maintenance_input_token_budget"], int(limit * 1.5)) if method == "llm" and limit else None
@@ -761,11 +775,10 @@ class MemoryService:
                         job["continuation_job_id"] = child["id"]
                         self.store.put("job", job, sid)
                     except HTTPException:
-                        job.update(status="deferred", error="续批未能入队，自动整理已暂停；请手动继续", continuation_pending=True)
+                        job.update(status="deferred", error="续批未能入队，本轮整理已结束", continuation_pending=True)
                         self.store.put("job", job, sid)
             except asyncio.CancelledError:
-                job.update(status="deferred", error="服务关闭时中断，进度已保留；请手动继续", finished_at=iso())
-                self.pause_maintenance(sid, job["error"])
+                job.update(status="deferred", error="服务关闭时中断，进度已保留", finished_at=iso())
                 self.store.put("job", job, sid)
                 raise
             except Exception as exc:
@@ -779,13 +792,11 @@ class MemoryService:
                 self.store.put("job", job, sid)
             finally:
                 self.report("maintenance_finished", space_id=sid, job_id=job_id, status=job["status"], calls=job.get("model_call_count", 0), elapsed_ms=round((time.perf_counter() - started) * 1000, 2))
-                if job["status"] in ("failed", "deferred"):
-                    self.pause_maintenance(sid, job.get("error", "整理材料暂缓，请手动继续"))
                 self.metrics.jobs.labels(job["status"], job.get("trigger", "manual")).inc()
                 self.metrics.job_seconds.observe(time.perf_counter() - started)
 
 
-    def enqueue(self, sid, body, trigger="manual", retry_of=None, inherited_limit=None, inherited_message_chars=None):
+    def enqueue(self, sid, body, trigger="manual", retry_of=None, inherited_limit=None, inherited_message_chars=None, timeout_batch_size=None):
         if self._closed:
             raise RuntimeError("MemoryService is closed")
         self.config_for(sid)
@@ -797,10 +808,8 @@ class MemoryService:
         if queued >= 20:
             raise HTTPException(429, "整理队列已满，请稍后重试")
         job = self.store.put("job", {"id": new_id("job"), "space_id": sid, "type": "maintenance", "status": "queued", "trigger": trigger,
-                               "created_at": iso(), "request": request, "retry_of": retry_of,
+                               "created_at": iso(), "request": request, "retry_of": retry_of, "timeout_batch_size": timeout_batch_size,
                                "event_ids": [], "message_count": 0, "adaptive_input_limit": inherited_limit, "adaptive_message_chars": inherited_message_chars}, sid)
-        if trigger in ("manual", "retry"):
-            self.store.put("integration", {"id": "maintenance-safety", "blocked": False}, sid)
         self.spawn(self.maintain_job(sid, job["id"], body))
         return job
 
@@ -818,8 +827,6 @@ class MemoryService:
                     self.metrics.focus_messages.labels("expired").inc(cleanup_buffer(self.store, sid, cfg))
                     if not cfg["schedule_enabled"]:
                         continue
-                    if any(r["id"] == "maintenance-safety" and r.get("blocked") for r in self.store.list("integration", sid)):
-                        continue
                     now = utcnow()
                     jobs = [j for j in self.store.list("job", sid) if j.get("type", "maintenance") == "maintenance"]
                     if any(j["status"] in ("queued", "running") for j in jobs):
@@ -833,7 +840,9 @@ class MemoryService:
                         hour, minute = map(int, cfg["schedule_daily_time"].split(":"))
                         due = (local.hour, local.minute) >= (hour, minute) and not any(dt(j["created_at"]).astimezone(ZoneInfo(cfg["timezone"])).date() == local.date() for j in scheduled)
                     if due and self.ready_maintenance_messages(sid, None, cfg):
-                        self.enqueue(sid, MaintenanceInput(), "scheduled")
+                        latest = max(jobs, key=lambda j: j.get("finished_at") or j["created_at"], default={})
+                        self.enqueue(sid, MaintenanceInput(), "scheduled",
+                                     timeout_batch_size=latest.get("next_batch_size"))
             except Exception as exc:
                 self.report("scheduler_failed", "ERROR", exc=exc)
                 self.metrics.scheduler_errors.inc()

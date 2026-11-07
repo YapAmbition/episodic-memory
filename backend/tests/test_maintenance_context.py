@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 import test_memory as fixtures
 from memory_slice.maintenance_context import budget_for, estimated_tokens, prepare, rank_events, segments
-from memory_slice.model import ContextLimitError, OutputLimitError, complete, is_context_limit
+from memory_slice.model import ContextLimitError, ModelTimeoutError, OutputLimitError, complete, is_context_limit
 from memory_slice.schemas import MaintenancePlan, MemoryConfig, ModelInput
 
 NOW = fixtures.NOW
@@ -35,6 +35,43 @@ class ContextTests(unittest.TestCase):
         self.assertEqual(MaintenancePlan(events=[{**event, 'anchors': anchors}]), expected)
         self.assertIn('processed_through_message_id',
                       MaintenancePlan(processed_through_message_id=None).model_fields_set)
+
+    def test_split_titles_and_existing_event_defaults(self):
+        operation = {'event_id': 'old', 'source_ids': ['m'], 'reason': '分成两件事',
+                     'parts': [{'body': '第一件事'}, {'title': '  ', 'body': '第二件事'}]}
+        previous = {'title': '原标题', 'status': 'open', 'salience': 0.2}
+        for metadata in ({}, {'status': None, 'salience': None}):
+            event = {'id': 'old', 'body': '追加事实', 'source_ids': ['m'], **metadata}
+            plan = MaintenancePlan.model_validate({'events': [event], 'splits': [operation]},
+                                                  context={'existing_events': {'old': previous}})
+            self.assertEqual([part.title for part in plan.splits[0].parts], ['第一件事', '第二件事'])
+            self.assertEqual(plan.events[0].status, 'open')
+            self.assertEqual(plan.events[0].salience, 0.2)
+
+    def test_missing_operation_evidence_is_reported_at_exact_field(self):
+        for section, item, field in [
+            ('events', {'title': '标题', 'source_ids': ['m']}, 'body'),
+            ('events', {'body': '正文'}, 'source_ids'),
+            ('merges', {'event_ids': ['a', 'b'], 'reason': '重复', 'source_ids': ['m']}, 'target_id'),
+            ('splits', {'event_id': 'a', 'reason': '拆开', 'source_ids': ['m']}, 'parts'),
+            ('reinforcements', {'event_id': 'a', 'message_id': 'm', 'reason': '重提', 'confidence': 1}, 'quote'),
+            ('ignored_messages', {'reason': '问候'}, 'message_id'),
+            ('deferred_messages', {'message_id': 'm'}, 'reason'),
+            ('read_requests', {'event_id': 'a'}, 'end'),
+        ]:
+            with self.subTest(section=section, field=field):
+                with self.assertRaises(ValidationError) as caught:
+                    MaintenancePlan.model_validate({section: [item]})
+                self.assertIn((section, 0, field), [err['loc'] for err in caught.exception.errors()])
+
+    def test_missing_focus_quote_and_link_target_are_reported(self):
+        event = {'body': '有来源的正文', 'source_ids': ['m'],
+                 'focus_evidence': {'message_id': 'm'}, 'links': [{'relation': '后续'}]}
+        with self.assertRaises(ValidationError) as caught:
+            MaintenancePlan(events=[event])
+        locations = [err['loc'] for err in caught.exception.errors()]
+        self.assertIn(('events', 0, 'focus_evidence', 'quote'), locations)
+        self.assertIn(('events', 0, 'links', 0, 'target_id'), locations)
 
     def test_null_compatibility_preserves_invalid_output_errors(self):
         event = {'title': '测试', 'body': '测试事件', 'source_ids': ['m1']}
@@ -115,6 +152,19 @@ class MaintenanceTests(unittest.TestCase):
         with patch('memory_slice.model.complete', reply):
             result = self.client.post(self.prefix + '/maintenance', json={}).json()
             return self.await_job(result['id'])
+
+    def test_repeated_model_timeout_stops_without_consuming_messages(self):
+        for i in range(4):
+            self.post_message(f'待处理 {i}')
+
+        async def timeout(*args, **kwargs):
+            raise ModelTimeoutError()
+
+        job = self.run_mock(timeout)
+        self.assertEqual(job['error_detail']['code'], 'model_timeout')
+        self.assertEqual(job['model_call_count'], 1)
+        self.assertEqual(job['next_batch_size'], 2)
+        self.assertEqual(self.client.get(self.prefix + '/stats').json()['pending_messages'], 4)
 
     def test_complete_prefix_waits_without_repeating_and_resumes_with_new_message(self):
         first = self.post_message('第一件事情已经说完').json()
@@ -220,7 +270,6 @@ class MaintenanceTests(unittest.TestCase):
             job=self.await_job(self.client.post(self.prefix+'/maintenance',json={}).json()['id'])
         self.assertEqual(batches,[4,2,1])
         self.assertEqual(job['status'],'failed')
-        self.assertTrue(self.app.state.store.get('integration','maintenance-safety',self.space)['blocked'])
         self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],4)
 
     def test_chain_stops_at_eight_calls_even_with_progress(self):
@@ -241,20 +290,67 @@ class MaintenanceTests(unittest.TestCase):
                 time.sleep(.01)
         self.assertEqual(len(calls),8)
         self.assertTrue(any(j['status']=='deferred' for j in jobs))
-        self.assertTrue(self.app.state.store.get('integration','maintenance-safety',self.space)['blocked'])
         self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],4)
 
-    def test_scheduler_does_not_retry_paused_material(self):
+    def test_scheduler_runs_normal_interval_after_failed_task(self):
         self.post_message()
-        self.config(schedule_enabled=True,schedule_interval_minutes=1)
-        service=self.app.state.memory
-        service.pause_maintenance(self.space,'test')
-        async def one_tick():
-            with patch.object(service,'enqueue') as enqueue, patch('memory_slice.service.asyncio.sleep',side_effect=asyncio.CancelledError):
-                try: await service.scheduler()
-                except asyncio.CancelledError: pass
-                enqueue.assert_not_called()
-        asyncio.run(one_tick())
+        self.config(schedule_enabled=True, schedule_interval_minutes=1)
+        service = self.app.state.memory
+        from memory_slice.store import utcnow, iso
+        now = utcnow()
+        failed = dict(id='job_timeout', status='failed', created_at=iso(now),
+                      finished_at=iso(now + timedelta(seconds=40)), trigger='scheduled',
+                      next_batch_size=2)
+        service.store.put('job', failed, self.space)
+        # Persisted pauses from older releases must not veto the configured schedule.
+        service.store.put('integration', dict(id='maintenance-safety', blocked=True), self.space)
+
+        async def tick(seconds):
+            with patch('memory_slice.service.utcnow', return_value=now + timedelta(seconds=seconds)), patch.object(
+                    service, 'spawn', side_effect=lambda coro: coro.close()), patch(
+                    'memory_slice.service.asyncio.sleep', side_effect=asyncio.CancelledError):
+                with self.assertRaises(asyncio.CancelledError):
+                    await service.scheduler()
+
+        asyncio.run(tick(59))
+        self.assertEqual(len(service.store.list('job', self.space)), 1)
+        asyncio.run(tick(60))
+        next_job = service.store.list('job', self.space)[-1]
+        self.assertEqual(next_job['trigger'], 'scheduled')
+        self.assertIsNone(next_job['retry_of'])
+        self.assertEqual(next_job['timeout_batch_size'], 2)
+        asyncio.run(tick(120))
+        self.assertEqual(len(service.store.list('job', self.space)), 2)
+
+    def test_missing_event_titles_recover_without_another_call(self):
+        old = self.create_event(title='陨石一号的旧标题')
+        msg = self.post_message('陨石一号有了新进展').json()
+
+        async def reply(*args, **kwargs):
+            return json.dumps({'events': [
+                {'id': old['id'], 'title': None, 'body': '追加经过', 'source_ids': [msg['id']]},
+                {'body': '记下另一件事\n还有一些细节', 'source_ids': [msg['id']]},
+            ]})
+
+        job = self.run_mock(reply)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(job['model_call_count'], 1)
+        self.assertEqual({e['title'] for e in self.client.get(self.prefix + '/events').json()},
+                         {'陨石一号的旧标题', '记下另一件事'})
+
+    def test_nested_validation_error_can_be_corrected(self):
+        self.post_message('今天烤了面包')
+        prompts = []
+        async def reply(settings, key, request, **kwargs):
+            prompts.append(request[0]['content'])
+            messages = json.loads(request[1]['content'])['new_messages']
+            if len(prompts) == 1:
+                return json.dumps({'ignored_messages': [{'message_id': messages[0]['id']}]})
+            return self.plan_for(messages)
+        job = self.run_mock(reply)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(job['model_call_count'], 2)
+        self.assertIn('ignored_messages.0.reason', prompts[1])
 
     def test_validation_failure_is_visible_and_logged_without_input(self):
         raw = self.post_message('private-dialogue-marker').json()
@@ -264,6 +360,7 @@ class MaintenanceTests(unittest.TestCase):
             job = self.run_mock(invalid)
         self.assertEqual(job['status'], 'failed')
         self.assertEqual(job['error_detail']['stage'], 'validate')
+        self.assertEqual(job['model_call_count'], 2)
         self.assertTrue(any(i['field'] == 'events.0.body' for i in job['error_detail']['issues']))
         rendered = json.dumps(job['error_detail']) + str(logs.output)
         self.assertIn(job['id'], str(logs.output))
@@ -717,7 +814,7 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(job['status'],'failed',job)
         self.assertEqual(self.client.get(self.prefix+'/events/'+old['id']).json()['body'],old['body'])
         self.assertFalse(self.app.state.store.get('message',raw['id'],self.space)['processed'])
-        self.assertTrue(any(r.get('blocked') for r in self.app.state.store.list('integration',self.space)))
+        self.assertFalse(any(r.get('blocked') for r in self.app.state.store.list('integration',self.space)))
 
     def test_partial_chain_failure_retry_keeps_committed_prefix_exactly_once(self):
         self.config(maintenance_pending_token_limit=512)
@@ -741,7 +838,6 @@ class MaintenanceTests(unittest.TestCase):
                 time.sleep(.01)
             failed = next(j for j in jobs if j['status']=='failed')
             self.assertEqual(self.client.get(self.prefix+'/stats').json()['pending_messages'],2)
-            self.assertTrue(self.app.state.store.get('integration','maintenance-safety',self.space)['blocked'])
             self.client.post(self.prefix+'/jobs/'+failed['id']+'/retry')
             self.wait_drained()
         self.assertNotIn(originals[0]['id'], [mid for batch in calls[1:] for mid in batch])

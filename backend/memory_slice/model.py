@@ -8,6 +8,13 @@ import httpx
 from .errors import MemoryError as HTTPException
 
 
+class ModelTimeoutError(HTTPException):
+    diagnostic_code = "model_timeout"
+
+    def __init__(self):
+        super().__init__(504, "模型请求超时，未收到完整结果")
+
+
 class ContextLimitError(HTTPException):
     def __init__(self):
         super().__init__(413, "模型明确报告上下文超限")
@@ -69,7 +76,7 @@ async def complete(settings, api_key, messages, json_mode=False, purpose="other"
                                 raise ContextLimitError()
                             retryable = response.status_code in (429, 500, 502, 503, 504)
                             outcome = "http_error"
-                            error = HTTPException(502, f"模型服务返回 HTTP {response.status_code}，请检查连接配置")
+                            error = ModelTimeoutError() if response.status_code == 504 else HTTPException(502, f"模型服务返回 HTTP {response.status_code}，请检查连接配置")
                         else:
                             data = response.json()
                             reported = False
@@ -94,7 +101,7 @@ async def complete(settings, api_key, messages, json_mode=False, purpose="other"
                             return content
                     except httpx.TimeoutException:
                         outcome, retryable = "timeout", True
-                        error = HTTPException(504, "模型服务响应超时，请稍后重试")
+                        error = ModelTimeoutError()
                     except httpx.HTTPError:
                         outcome, retryable = "network_error", True
                         error = HTTPException(502, "模型连接失败，请检查模型连接配置")

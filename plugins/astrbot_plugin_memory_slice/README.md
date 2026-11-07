@@ -1,12 +1,34 @@
 # 记忆切片 · Memory Slice for AstrBot
 
-插件版本 **0.3.21**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
+插件版本 **0.3.22**，内嵌 Memory Slice **0.7.0** 核心。无需另外部署 Docker 或 HTTP 服务。默认程序召回，可选远程 embedding。模型整理复用 AstrBot 已配置的聊天模型。
+
+[查看插件更新记录](CHANGELOG.md)
+
+## 私聊快速体验
+
+1. 在 AstrBot 插件管理中使用[插件仓库](https://github.com/YapAmbition/memory-slice-astrbot-plugin)安装。已有可用聊天模型时保留默认配置即可：整理跟随当前会话的模型，召回使用本地程序，无需配置 embedding。
+2. 私聊告诉机器人一件具体的事，例如“我周末烤面包时忘了放酵母，给它起名叫陨石一号”。默认每 60 分钟整理一次；管理员想立即体验，可发送 `/记忆整理`，再用 `/记忆切片` 查看任务状态和事件数。
+3. 整理完成后，在同一私聊里问“我上次给烤失败的面包起了什么名字？”。等原对话已离开模型上下文再问，更容易观察到长期记忆的作用。群聊需要先在插件配置里填写关注对象的平台 UID（`focus_uid`），保存后重载。
+
+### 不启用 embedding 能找回哪些记忆？
+
+在 v0.3.21 的共享核心上，用 16 件固定事件跑了 28 道题。程序召回在 23 道有答案的问题中，有 **18 道在前 5 条结果里找到了预期事件（78.3%）**。
+
+| 问题类型 | 前 5 条命中题数 / 有答案题数 |
+| --- | ---: |
+| 有明确关键词、名称或细节 | 6 / 6 |
+| 追问需要用到前文 | 4 / 4 |
+| 需要找回多件关联事件 | 4 / 4（每题的预期事件均找全） |
+| 换种说法，关键词重合较少 | 3 / 8 |
+| 查询一项已知的未来计划 | 1 / 1 |
+
+另外 5 道无答案题均返回空结果。这个小样本中，程序召回对具体线索和关联事件表现较好，漏掉的 5 道正例都在语义改写组。以上衡量的是事件检索；本次没有运行真实 embedding 对照。配置向量服务后，可在网页「召回测试」选择「程序 + Embedding 对照」，在同一组题上比较两种模式。[测试集与复现说明](https://github.com/YapAmbition/episodic-memory/tree/astrbot-v0.3.21/evals/recall)
 
 ## 安装
 
 要求 **AstrBot >= 4.24.0**，使用其内置 LLM/Agent 流程。该最低版本来自本轮临时内容块 API；不支持绕过版本限制安装到旧版。外接 Dify 等未触发标准请求钩子的执行器尚未适配。
 
-1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.21.zip`。
+1. 在 AstrBot 插件管理页面选择从本地 ZIP 安装，上传 `astrbot_plugin_memory_slice-v0.3.22.zip`。
 2. 如果使用手工安装，将 ZIP 中的 `astrbot_plugin_memory_slice` 文件夹放到 AstrBot 的 `data/plugins/` 下；在 AstrBot 的 Python 环境安装该目录的 `requirements.txt`，然后重载插件。
 3. 插件配置中选择已有聊天模型；留空时跟随当前会话。无需填写新的 API Key 或模型地址。
 4. 私聊可以直接测试。群聊填写 `focus_uid`（要关注的人的平台 UID），建议同时填写 `focus_name` 和 `group_ids`。
@@ -133,15 +155,15 @@ plugin_data/astrbot_plugin_memory_slice/
 
 一次性准备：在开发仓库 **Settings → Secrets and variables → Actions** 添加 `PLUGIN_PUBLISH_TOKEN`。使用 Fine-grained token，只授权 `YapAmbition/memory-slice-astrbot-plugin` 的 **Contents: Read and write**；不要把令牌写入代码。到期后更新同名 Secret。
 
-发版步骤（以下以当前 0.3.21 为例）：
+发版步骤（以下以当前 0.3.22 为例）：
 
 1. 确认 `metadata.yaml`、`main.py` 注册版本及说明中的版本一致；后续发布必须递增版本。
 2. 将代码和工作流提交、推送到开发仓库。
 3. 在要发布的提交上执行：
 
 ```bash
-git tag astrbot-v0.3.21
-git push origin astrbot-v0.3.21
+git tag astrbot-v0.3.22
+git push origin astrbot-v0.3.22
 ```
 
 标签版本必须与 `metadata.yaml` 完全一致。普通分支 push 不触发发布，页面 Run workflow 仍只构建 ZIP。
@@ -164,7 +186,7 @@ PYTHONPATH=backend python3 -m unittest discover -s backend/tests -q
 
 构建脚本先在本机执行 React 生产构建（每次先执行 `npm ci`），把页面静态资源放进 ZIP，再从 `backend/memory_slice/` 复制核心到 ZIP，生成 SHA-256 清单，避免手工维护两份业务逻辑。开发者修改核心后需重新构建插件；源码目录的相对 `.memory_slice` 在构建时补入。
 
-默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.21.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
+默认输出在项目内的 `dist/astrbot_plugin_memory_slice-v0.3.22.zip`（可用 `--output` 指定位置）。已有与源码匹配的前端构建时可加 `--skip-frontend-build`；脚本校验源码指纹，过期资源会拒绝打包。
 
 当前通过 25 项插件测试、113 项核心/HTTP 回归测试和 17 项前端工具测试。新增覆盖网页鉴权、同实例共享、只读配置、事件编辑、整理、端口释放及重启。插件测试使用真实共享核心、SQLite 和模拟 AstrBot 宿主，覆盖事件整理/召回、群聊筛选与隔离、重载、去重、超时取消、模型输出截断、临时注入、发送后记录、故障不阻断聊天及包内核心一致性。
 

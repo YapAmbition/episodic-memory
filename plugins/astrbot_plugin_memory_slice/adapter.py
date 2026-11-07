@@ -2,10 +2,13 @@
 
 import asyncio
 import time
+
+import httpx
 from .memory_slice.errors import MemoryError
 from .memory_slice.model import (
     model_slot,
     ContextLimitError,
+    ModelTimeoutError,
     OutputLimitError,
     is_context_limit,
 )
@@ -106,13 +109,16 @@ class AstrBotModelAdapter:
         except asyncio.CancelledError:
             outcome = "cancelled"
             raise
-        except asyncio.TimeoutError:
+        except (asyncio.TimeoutError, httpx.TimeoutException):
             outcome = "timeout"
-            raise MemoryError(504, "AstrBot 记忆模型请求超时") from None
+            raise ModelTimeoutError() from None
         except MemoryError:
             raise
         except Exception as exc:
             response = getattr(exc, "response", None)
+            if getattr(response, "status_code", None) == 504:
+                outcome = "timeout"
+                raise ModelTimeoutError() from None
             if response is not None and is_context_limit(response):
                 outcome = "context_limit"
                 raise ContextLimitError() from None

@@ -624,6 +624,7 @@ class AdapterTests(unittest.IsolatedAsyncioTestCase):
                 [{"role": "user", "content": "x"}],
             )
         self.assertEqual(caught.exception.status_code, 504)
+        self.assertEqual(caught.exception.diagnostic_code, "model_timeout")
         task = asyncio.create_task(
             adapter.complete(
                 {"astrbot_umo": "u"}, None, [{"role": "user", "content": "x"}]

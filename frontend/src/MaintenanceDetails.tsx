@@ -18,7 +18,7 @@ export function MaintenanceDetails({ job, onRetry }: { job: Job; onRetry?: (id: 
       {(job.error_detail.error_count ?? 0) > 20 && <p>共 {job.error_detail.error_count} 项问题，仅展示前 20 项。</p>}
       <p>在后端日志中搜索此任务 ID，可找到对应错误记录。</p>
     </div>}
-    {job.run_call_limit && <p className="maintenance-note">本轮累计模型调用 {job.run_model_call_count ?? 0} / {job.run_call_limit} 次（含续批、重试和补读）。达到上限后暂停自动整理，需手动继续。</p>}
+    {job.run_call_limit && <p className="maintenance-note">本轮累计模型调用 {job.run_model_call_count ?? 0} / {job.run_call_limit} 次（含续批、重试和补读）。达到上限后保留进度。开启自动整理时，下一轮按原定时间执行。</p>}
     {job.waiting_for_context && <p className="maintenance-note">{job.waiting_reason}；相同材料不会重复调用模型，其他会话可以继续整理。</p>}
     {b && <><div className="maintenance-facts">
       <span><small>容量来源</small>{b.source === "configured" ? "手动配置" : "未知 · 保守预算"}</span>

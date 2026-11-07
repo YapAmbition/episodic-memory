@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import ValidationInfo, BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic_core import PydanticUseDefault
 
 
@@ -280,12 +280,45 @@ class MaintenanceAnchors(Anchors):
                                    mode="before")(use_default_if_null)
 
 
+def maintenance_title_from_body(value):
+    title = value.get("title")
+    body = value.get("body")
+    if (title is None or isinstance(title, str) and not title.strip()) and isinstance(body, str):
+        first_line = body.strip().partition("\n")[0][:45].rstrip()
+        if first_line:
+            return {**value, "title": first_line}
+    return value
+
+
 class MaintenanceEvent(EventInput):
+    source_ids: list[str] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_event_defaults(cls, value, info: ValidationInfo):
+        if not isinstance(value, dict):
+            return value
+        eid = value.get("id")
+        if eid is None:
+            return maintenance_title_from_body(value)
+        existing = (info.context or {}).get("existing_events", {})
+        previous = existing.get(eid) if isinstance(eid, str) else None
+        if previous is None:
+            return value
+        value = dict(value)
+        title = value.get("title")
+        if title is None or isinstance(title, str) and not title.strip():
+            value["title"] = previous["title"]
+        for field in ("status", "salience"):
+            if value.get(field) is None:
+                value[field] = previous[field]
+        return value
+
     anchors: MaintenanceAnchors = Field(default_factory=MaintenanceAnchors)
     _empty_metadata = field_validator("anchors", "links", "person_ids", "salience_reason",
                                       "status_evidence", mode="before")(use_default_if_null)
 
-    id: Optional[str] = None
+    id: Optional[str] = Field(None, min_length=1)
     local_id: Optional[str] = Field(None, pattern=r"^new_[A-Za-z0-9_-]+$")
     change_type: Literal["append", "correction"] = "append"
     status_evidence: str = Field("", max_length=1000)
@@ -312,7 +345,15 @@ class MaintenanceMerge(MergeInput):
     source_ids: list[str] = Field(min_length=1)
 
 
+class MaintenanceSplitPart(SplitPart):
+    @model_validator(mode="before")
+    @classmethod
+    def fill_missing_title(cls, value):
+        return maintenance_title_from_body(value) if isinstance(value, dict) else value
+
+
 class MaintenanceSplit(SplitInput):
+    parts: list[MaintenanceSplitPart] = Field(min_length=2, max_length=10)
     event_id: str
     source_ids: list[str] = Field(min_length=1)
 

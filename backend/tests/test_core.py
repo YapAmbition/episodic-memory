@@ -123,7 +123,6 @@ class CoreTests(unittest.IsolatedAsyncioTestCase):
         await self.service.start()
         recovered = await self.finished(job)
         self.assertEqual(recovered['status'], 'deferred', recovered)
-        self.assertTrue(self.service.store.get('integration','maintenance-safety',self.sid)['blocked'])
 
     async def test_instances_are_isolated_and_errors_are_domain_exceptions(self):
         with tempfile.TemporaryDirectory() as other:

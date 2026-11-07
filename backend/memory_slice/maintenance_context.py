@@ -120,7 +120,7 @@ def material(event, info, query, excerpt_chars):
     return item
 
 
-def prepare(store, sid, originals, settings, config, at, prompt, limit=None, message_char_limit=None):
+def prepare(store, sid, originals, settings, config, at, prompt, limit=None, message_char_limit=None, max_messages=None):
     budget = budget_for(settings, config)
     budget["input_limit"] = min(budget["input_limit"], limit) if limit else budget["input_limit"]
     limit = budget["input_limit"]
@@ -143,6 +143,8 @@ def prepare(store, sid, originals, settings, config, at, prompt, limit=None, mes
     if any(e["status"] != "archived" and dt(e["learned_at"]) <= at for e in meta):
         message_limit = min(limit, max(estimated_tokens(request()) + 512, int(limit * .7)))
     for message in originals:
+        if max_messages is not None and len(chosen) >= max_messages:
+            break
         if chosen and message["conversation_id"] != chosen[0]["conversation_id"]:
             break
         start = message.get("maintenance_offset", 0)
