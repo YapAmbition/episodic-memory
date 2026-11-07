@@ -8,11 +8,12 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import httpx
+from pydantic import ValidationError
 
 import test_memory as fixtures
 from memory_slice.maintenance_context import budget_for, estimated_tokens, prepare, rank_events, segments
 from memory_slice.model import ContextLimitError, OutputLimitError, complete, is_context_limit
-from memory_slice.schemas import MemoryConfig, ModelInput
+from memory_slice.schemas import MaintenancePlan, MemoryConfig, ModelInput
 
 NOW = fixtures.NOW
 
@@ -20,6 +21,28 @@ NOW = fixtures.NOW
 class ContextTests(unittest.TestCase):
     def setUp(self):
         self.config = MemoryConfig().model_dump()
+
+    def test_null_optional_maintenance_metadata_matches_omission(self):
+        empty = MaintenancePlan()
+        operations = ('events', 'merges', 'splits', 'reinforcements', 'ignored_messages',
+                      'deferred_messages', 'read_requests')
+        self.assertEqual(MaintenancePlan.model_validate(dict.fromkeys(operations)), empty)
+        event = {'title': '测试', 'body': '测试事件', 'source_ids': ['m1']}
+        expected = MaintenancePlan(events=[event])
+        metadata = dict.fromkeys(('anchors', 'links', 'person_ids', 'salience_reason', 'status_evidence'))
+        self.assertEqual(MaintenancePlan(events=[{**event, **metadata}]), expected)
+        anchors = dict.fromkeys(('time', 'scene', 'details', 'structure', 'triggers'))
+        self.assertEqual(MaintenancePlan(events=[{**event, 'anchors': anchors}]), expected)
+        self.assertIn('processed_through_message_id',
+                      MaintenancePlan(processed_through_message_id=None).model_fields_set)
+
+    def test_null_compatibility_preserves_invalid_output_errors(self):
+        event = {'title': '测试', 'body': '测试事件', 'source_ids': ['m1']}
+        for payload in ({'events': [None]}, {'events': {}}, {'events': [{**event, 'source_ids': None}]},
+                        {'events': [{**event, 'status': None}]}, {'events': [{**event, 'links': [None]}]},
+                        {'ignored_messages': [{'message_id': 'm1', 'reason': None}]}):
+            with self.subTest(payload=payload), self.assertRaises(ValidationError):
+                MaintenancePlan.model_validate(payload)
 
     def test_unknown_capacity_is_explicit_and_not_inferred_from_name(self):
         result = budget_for({'model': 'some-128k-name'}, self.config)
@@ -104,7 +127,9 @@ class MaintenanceTests(unittest.TestCase):
                 result = json.loads(self.plan_for(messages[:1]))
                 result.update(processed_through_message_id=first['id'], waiting_reason='第二件尚未展开')
                 return json.dumps(result)
-            return self.plan_for(messages)
+            result = json.loads(self.plan_for(messages))
+            result['waiting_reason'] = None
+            return json.dumps(result)
         self.model()
         with patch('memory_slice.model.complete', reply):
             job = self.await_job(self.client.post(self.prefix+'/maintenance',json={'conversation_id':self.cid}).json()['id'])

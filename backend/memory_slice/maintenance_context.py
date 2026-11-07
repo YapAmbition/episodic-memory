@@ -12,7 +12,7 @@ from .retrieval import shortlist
 from .store import dt
 
 PROTOCOL = """
-输出 processed_through_message_id：本次连续处理前缀的最后消息 ID；全部暂缓则为 null，并给 waiting_reason。前缀内每条消息必须用于事件、强化或 ignored_messages，不能有空洞。尾部允许等待补充，不要把未得到回答本身记录成事情。事情不必结束，但记忆应能独立理解。
+输出 processed_through_message_id：本次连续处理前缀的最后消息 ID；全部暂缓则为 null，并在 waiting_reason 中用简短文字说明原因。无需等待时可省略 waiting_reason 或填 null。前缀内每条消息必须用于事件、强化或 ignored_messages，不能有空洞。尾部允许等待补充，不要把未得到回答本身记录成事情。事情不必结束，但记忆应能独立理解。
 force_progress=true 时必须推进非空的连续消息前缀；输出预算不足时允许剩余消息留到下一批：有事实就记阶段性进展，无可理解信息则明确忽略并说明理由，不得虚构结局。previous_dialogue 只读，不能作为本轮来源。
 frozen=true 的事件已冻结，仅可作为只读背景：不得追加、改写、合并或拆分。后续进展或更正应新建事件，以 links 关联原事件，不得因为冻结而忽略新事实。
 后端使用追加协议：已有事件 body 只写新增内容或更正，不得重写旧正文。

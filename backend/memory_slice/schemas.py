@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticUseDefault
 
 
 class StrictModel(BaseModel):
@@ -268,7 +269,22 @@ class FocusEvidence(StrictModel):
     quote: str = Field(min_length=2, max_length=1000)
 
 
+def use_default_if_null(value):
+    if value is None:
+        raise PydanticUseDefault()
+    return value
+
+
+class MaintenanceAnchors(Anchors):
+    _empty_lists = field_validator("time", "scene", "details", "structure", "triggers",
+                                   mode="before")(use_default_if_null)
+
+
 class MaintenanceEvent(EventInput):
+    anchors: MaintenanceAnchors = Field(default_factory=MaintenanceAnchors)
+    _empty_metadata = field_validator("anchors", "links", "person_ids", "salience_reason",
+                                      "status_evidence", mode="before")(use_default_if_null)
+
     id: Optional[str] = None
     local_id: Optional[str] = Field(None, pattern=r"^new_[A-Za-z0-9_-]+$")
     change_type: Literal["append", "correction"] = "append"
@@ -315,8 +331,13 @@ class IgnoredMessage(StrictModel):
 
 
 class MaintenancePlan(StrictModel):
+    _empty_operations = field_validator(
+        "events", "merges", "splits", "reinforcements", "ignored_messages", "deferred_messages",
+        "read_requests", mode="before",
+    )(use_default_if_null)
+
     processed_through_message_id: Optional[str] = None
-    waiting_reason: str = Field("", max_length=500)
+    waiting_reason: Optional[str] = Field(None, max_length=500)
     events: list[MaintenanceEvent] = Field(default_factory=list, max_length=30)
     merges: list[MaintenanceMerge] = Field(default_factory=list, max_length=5)
     splits: list[MaintenanceSplit] = Field(default_factory=list, max_length=5)
