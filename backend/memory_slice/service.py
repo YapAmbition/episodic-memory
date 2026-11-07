@@ -29,7 +29,7 @@ from .seed import create_space, seed_demo
 from .store import Store, dt, iso, new_id, utcnow
 
 
-from .errors import MemoryError as HTTPException
+from .errors import FocusEvidenceError, MemorySliceError as HTTPException
 from .adapters import RemoteModelAdapter
 
 
@@ -451,12 +451,14 @@ class MemoryService:
                     originals, limit = messages, job.get("adaptive_input_limit")
                     message_char_limit = None  # Never inherit a tiny output-retry character slice.
                     adaptations, reads = 0, 0
+                    prompt = (config["maintenance_prompt"] or DEFAULT_MAINTENANCE_PROMPT) + focus_prompt(config)
+                    focus_correction = ""
                     job.update(model_call_count=0, adaptation_count=0, read_rounds=0, attempts=[])
                     while True:
                         stage = "prepare"
                         preparation_started = time.perf_counter()
                         prepared = prepare_maintenance(self.store, sid, originals, settings, config, dt(body.at or utcnow()),
-                                                       (config["maintenance_prompt"] or DEFAULT_MAINTENANCE_PROMPT) + focus_prompt(config), limit, message_char_limit)
+                                                       prompt + focus_correction, limit, message_char_limit)
                         self.metrics.maintenance_stage.labels("prepare").observe(time.perf_counter() - preparation_started)
                         retry = False
                         while True:
@@ -547,10 +549,25 @@ class MemoryService:
                                 reads += 1
                                 job["read_rounds"] = reads
                             prepared = next_material
-                        if not retry:
-                            break
-                    if prepared.get("continuation_only") and (any(e.id for e in plan.events) or plan.merges or plan.splits or plan.reinforcements or plan.ignored_messages):
-                        raise HTTPException(502, "关联续篇模式禁止修改旧事件或忽略消息，原文与进度保留")
+                        if retry:
+                            continue
+                        stage = "apply"
+                        if prepared.get("continuation_only") and (any(e.id for e in plan.events) or plan.merges or plan.splits or plan.reinforcements or plan.ignored_messages):
+                            raise HTTPException(502, "关联续篇模式禁止修改旧事件或忽略消息，原文与进度保留")
+                        can_correct_focus = not focus_correction and run["calls"] < 8 and not prepared.get("continuation_only")
+                        try:
+                            validate_focus(plan, messages, config, skip_invalid=not can_correct_focus)
+                        except FocusEvidenceError as exc:
+                            attempt["outcome"] = exc.diagnostic_code
+                            if not can_correct_focus:
+                                raise
+                            focus_correction = (
+                                f"\n上次整理未通过关注证据校验：{exc.detail}。请依据本次材料重新输出完整计划。"
+                                "逐件核对关注人物 ID、来源消息 ID 和逐字引文；关系不确定时暂缓。"
+                            )
+                            self.report("maintenance_focus_correction", "WARNING", job_id=job_id, code=exc.diagnostic_code)
+                            continue
+                        break
                     method = "llm"
                     for reason, count in (("faded", prepared["budget"]["faded_count"]),
                                           ("unrelated", prepared["budget"]["unrelated_count"]),
@@ -586,7 +603,6 @@ class MemoryService:
                     plan = MaintenancePlan.model_validate({"events": raw_events, "ignored_messages": ignored})
                     method = "local_archive"
                 stage = "apply"
-                validate_focus(plan, messages, config)
                 known = {e["id"]: e for e in existing}
                 assigned = [(entry, entry.id or new_id("event")) for entry in plan.events]
                 new_ids = {eid for entry, eid in assigned if entry.id is None}

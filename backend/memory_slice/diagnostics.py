@@ -1,7 +1,7 @@
 """Safe job diagnostics: never include model output, validation inputs or secrets."""
 import traceback
 from pathlib import Path
-from .errors import MemoryError as HTTPException
+from .errors import FocusEvidenceError, MemorySliceError
 from pydantic import ValidationError
 
 MESSAGES = {
@@ -22,8 +22,10 @@ def job_diagnostic(exc, stage):
             'field': '.'.join(str(p) for p in e['loc'])[:200] if e['type'] != 'extra_forbidden' else '(额外字段)',
             'code': e['type'], 'message': MESSAGES.get(e['type'], '字段类型或约束不符合要求'),
         } for e in errors[:20]])
-    elif isinstance(exc, HTTPException):
-        result.update(code='http_error', status_code=exc.status_code)
+    elif isinstance(exc, MemorySliceError):
+        result.update(code=exc.diagnostic_code, status_code=exc.status_code)
+        if isinstance(exc, FocusEvidenceError):
+            result["issues"] = [{"field": "events", "code": exc.diagnostic_code, "message": exc.detail}]
     # Stack locations are useful for unexpected failures; exception text can contain credentials.
     result['frames'] = [{'file': Path(f.filename).name, 'line': f.lineno, 'function': f.name}
                         for f in traceback.extract_tb(exc.__traceback__)[-8:]]

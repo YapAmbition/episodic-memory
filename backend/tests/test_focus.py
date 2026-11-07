@@ -115,15 +115,54 @@ class FocusTests(unittest.TestCase):
         self.assertEqual(self.app.state.store.get('message',source['id'],self.space)['retention'],'permanent')
         self.assertEqual(job['focus_summary']['retained'],1)
 
-    def test_unrelated_or_fabricated_evidence_rejected_atomically(self):
-        self.group();self.configure()
-        source=self.message('张三昨天下雨没出门',sender_id=self.other).json()
-        async def reply(*a,**kw):
-            return json.dumps({'events':[{'title':'编造关联','body':'不成立','person_ids':[self.person],'source_ids':[source['id']],'focus_evidence':{'message_id':source['id'],'quote':'张三去旅游'}}]})
-        job=self.run_plan(reply)
-        self.assertEqual(job['status'],'failed')
-        self.assertEqual(self.client.get(self.prefix+'/events').json(),[])
-        self.assertFalse(self.app.state.store.get('message',source['id'],self.space)['processed'])
+    def test_invalid_evidence_skips_source_and_valid_event_commits_once(self):
+        self.group()
+        self.configure()
+        bad = self.message('张三昨天下雨没出门', sender_id=self.other).json()
+        good = self.message('今天我去买了面包', sender_id=self.person).json()
+
+        async def reply(*args, **kwargs):
+            return json.dumps({'events': [
+                {'title': '编造关联', 'body': '不成立', 'person_ids': [self.person],
+                 'source_ids': [bad['id'], good['id']],
+                 'focus_evidence': {'message_id': bad['id'], 'quote': '张三去旅游'}},
+                {'title': '买面包', 'body': '张三买了面包', 'person_ids': [self.person],
+                 'source_ids': [good['id']],
+                 'focus_evidence': {'message_id': good['id'], 'quote': '买了面包'}},
+            ]})
+
+        job = self.run_plan(reply)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(job['model_call_count'], 2)
+        self.assertEqual([i['message_id'] for i in job['ignored_messages']], [bad['id']])
+        self.assertIn('quote', job['ignored_messages'][0]['reason'])
+        self.assertEqual([e['title'] for e in self.client.get(self.prefix+'/events').json()], ['买面包'])
+        for source in (bad, good):
+            stored = self.app.state.store.get('message', source['id'], self.space)
+            self.assertTrue(stored['processed'])
+            self.assertEqual(stored['content'], source['content'])
+        self.assertEqual(self.run_plan(reply)['message_count'], 0)
+
+    def test_focus_evidence_can_be_corrected_before_commit(self):
+        self.group()
+        self.configure()
+        source = self.message('张三昨天下雨没出门', sender_id=self.other).json()
+        prompts = []
+
+        async def reply(settings, key, request, **kw):
+            prompts.append(request[0]['content'])
+            quote = '错引' if len(prompts) == 1 else '下雨没出门'
+            return json.dumps({'events': [{
+                'title': '雨天', 'body': '李四说张三没出门', 'person_ids': [self.person],
+                'source_ids': [source['id']], 'focus_evidence': {'message_id': source['id'], 'quote': quote},
+            }]})
+
+        job = self.run_plan(reply)
+        self.assertEqual(job['status'], 'completed', job)
+        self.assertEqual(job['run_model_call_count'], 2)
+        self.assertIn('quote 未逐字匹配', prompts[1])
+        self.assertEqual(len(self.client.get(self.prefix + '/events').json()), 1)
+        self.assertTrue(self.app.state.store.get('message', source['id'], self.space)['processed'])
 
     def test_buffer_cleanup_keeps_legacy_sources_and_removes_expired_ignored(self):
         self.group()

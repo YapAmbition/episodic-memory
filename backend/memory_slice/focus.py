@@ -2,7 +2,8 @@
 import re
 from collections import defaultdict
 from datetime import timedelta
-from .errors import MemoryError as HTTPException
+from .errors import FocusEvidenceError, MemorySliceError as HTTPException
+from .schemas import IgnoredMessage
 from .store import dt, iso, utcnow
 
 def recall_person_keys(people):
@@ -96,21 +97,60 @@ def focus_prompt(config):
             '不要把群成员、围观者或仅发哈哈/表情的人认定为参与者。'
             '每件相关事件 person_ids 必须包含关注对象；其他 person_ids 只填有依据的相关人。'
             '用正文明确谁参与、谁转述、谁补充，以及尚未确认的信息。'
-            '每件事件必须给 focus_evidence:{message_id:本轮消息ID,quote:其中逐字原话}，说明与关注对象的关系。'
+            '每件事件必须给 focus_evidence:{message_id:本轮消息ID,quote:其中逐字原话}，message_id 须列入该事件 source_ids，选用 focus_reason 为 speaker、mention、reply 或 name 的消息。'
             '无关内容返回 ignored_messages；关系不确定返回 deferred_messages。不要为通过校验编造关联。')
 
-def validate_focus(plan, messages, config):
+def validate_focus_event(entry, by_id, focus):
+    evidence = entry.focus_evidence
+    if focus not in entry.person_ids:
+        raise FocusEvidenceError('focus_person_missing', '事件的 person_ids 缺少关注对象')
+    if evidence is None:
+        raise FocusEvidenceError('focus_evidence_missing', '事件缺少关注对象原话证据 focus_evidence')
+    source = by_id.get(evidence.message_id)
+    if source is None:
+        raise FocusEvidenceError('focus_message_unknown', '关注证据的 message_id 未对应本轮消息')
+    if source['id'] not in entry.source_ids:
+        raise FocusEvidenceError('focus_source_missing', '关注证据的消息未列入事件 source_ids')
+    if source.get('focus_reason') not in {'speaker', 'mention', 'reply', 'name'}:
+        raise FocusEvidenceError('focus_message_context_only', '引用的消息只能作为背景，缺少直接关联关注对象的消息')
+    if evidence.quote not in source['content']:
+        raise FocusEvidenceError('focus_quote_mismatch', '关注证据的 quote 未逐字匹配引用消息的原文')
+
+
+def validate_focus(plan, messages, config, skip_invalid=False):
     focus = config.get('focus_person_id')
     if not focus:
         return
     by_id = {m['id']: m for m in messages}
+    valid_events = []
+    skipped = {}
+    removed_aliases = set()
     for entry in plan.events:
-        evidence = entry.focus_evidence
-        source = by_id.get(evidence.message_id) if evidence else None
-        if (focus not in entry.person_ids or not source or source['id'] not in entry.source_ids
-                or source.get('focus_reason') not in {'speaker', 'mention', 'reply', 'name'}
-                or evidence.quote not in source['content']):
-            raise HTTPException(502, '关注对象关联缺少本轮原话证据，未写入事件')
+        try:
+            validate_focus_event(entry, by_id, focus)
+        except FocusEvidenceError as exc:
+            if not skip_invalid or not entry.source_ids or not set(entry.source_ids).issubset(by_id):
+                raise
+            skipped.update(dict.fromkeys(entry.source_ids, exc.detail))
+            if entry.local_id:
+                removed_aliases.add(entry.local_id)
+        else:
+            valid_events.append(entry)
+    if skipped:
+        plan.events = valid_events
+        removed_aliases.difference_update(e.local_id for e in valid_events)
+        for entry in valid_events:
+            entry.links = [link for link in entry.links if link.target_id not in removed_aliases]
+            for alias in removed_aliases:
+                entry.body = entry.body.replace("[[" + alias + "]]", "[未保存的关联事件]")
+        # Shared sources keep their valid disposition (including an explicit deferral).
+        for operation in [*valid_events, *plan.merges, *plan.splits]:
+            for mid in operation.source_ids:
+                skipped.pop(mid, None)
+        for item in [*plan.reinforcements, *plan.ignored_messages, *plan.deferred_messages]:
+            skipped.pop(item.message_id, None)
+        plan.ignored_messages.extend(IgnoredMessage(message_id=mid, reason=reason)
+                                     for mid, reason in skipped.items())
     for operation in [*plan.merges, *plan.splits]:
         if not any(by_id.get(mid, {}).get('focus_reason') in {'speaker', 'mention', 'reply', 'name'}
                    for mid in operation.source_ids):
